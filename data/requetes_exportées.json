@@ -1,0 +1,57 @@
+{
+  "req_1": {
+    "type": "Comptage"
+  },
+  "req_2": {
+    "type": "Comptage",
+    "by": [
+      "island",
+      "sex"
+    ]
+  },
+  "req_3": {
+    "type": "Comptage",
+    "by": [
+      "island",
+      "species"
+    ]
+  },
+  "req_4": {
+    "type": "Total",
+    "variable": "body_mass_g",
+    "bounds": [
+      2000,
+      6000
+    ],
+    "by": [
+      "island"
+    ]
+  },
+  "req_5": {
+    "type": "Moyenne",
+    "variable": "body_mass_g",
+    "bounds": [
+      2000,
+      6000
+    ],
+    "by": [
+      "island",
+      "sex"
+    ]
+  },
+  "req_6": {
+    "type": "Quantile",
+    "variable": "body_mass_g",
+    "by": [
+      "island",
+      "sex"
+    ],
+    "alpha": 0.5,
+    "candidats": {
+            "type": "range",
+            "min": 2000,
+            "max": 6000,
+            "step": 500
+        }
+  }
+}
