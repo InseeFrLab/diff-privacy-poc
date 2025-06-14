@@ -11,18 +11,17 @@ from src.layout import (
     page_conception_budget,
     page_resultat_dp,
     page_etat_budget_dataset,
-    page_a_propos,
     make_radio_buttons,
-    affichage_requete, affichage_requete_dp_spec,
+    affichage_requete,
+    afficher_resultats
 )
 from src.process_tools import (
-    process_request, process_request_dp,
-    process_request_dp_spec,
+    process_request, process_request_dp, calculer_toutes_les_requetes
 )
 from src.fonctions import (
-    eps_from_rho_delta, update_context_spec,
+    eps_from_rho_delta,
     sys_budget_dp, update_context,
-    normalize_weights, count_modalities,
+    normalize_weights,
     organiser_par_by, load_data
 )
 from src.constant import (
@@ -60,7 +59,6 @@ app_ui = ui.page_navbar(
     page_conception_budget(),
     page_resultat_dp(),
     page_etat_budget_dataset(),
-    page_a_propos(),
     title=ui.div(
         ui.img(src="insee-logo.png", height="80px", style="margin-right:10px"),
         ui.img(src="Logo_poc.png", height="80px", style="margin-right:10px"),
@@ -82,29 +80,32 @@ def server(input, output, session):
     trigger_update_budget = reactive.Value(0)
 
     @reactive.Calc
+    def normalized_weights():
+        return normalize_weights(requetes(), input)
+
+    @reactive.Calc
     def X_count():
-        weights = normalize_weights(requetes(), input)
-        reqs = {k: v for k, v in requetes().items() if v["type"].lower() in ["count", "comptage"]}
-        poids, lien = organiser_par_by(reqs, weights)
+        poids = normalized_weights()  # Poids normalisé de toutes les requêtes
+        nb_modalite = {k: len(v) for k, v in key_values().items()}
+        req_comptage = {k: v for k, v in requetes().items() if v["type"].lower() in ["count", "comptage"]}
+        poids_comptage_req = {k: v for k, v in poids.items() if k in req_comptage.keys()}
+        budget_comptage = input.budget_total() * sum(poids_comptage_req.values())
+        poids_comptage, lien_comptage_req = organiser_par_by(req_comptage, poids)
+        variance_estimation, variance_req, poids_estimateur = sys_budget_dp(budget_rho=budget_comptage, nb_modalite=nb_modalite, poids=poids_comptage)
 
-        nb_modalite = count_modalities(dataset())
-        poids_comptage = {k: v for k, v in weights.items() if k in reqs.keys()}
-        variance_atteinte, variance_req, poids_estimateur = sys_budget_dp(budget_rho=input.budget_total() * sum(poids_comptage.values()), nb_modalite=nb_modalite, poids=poids)
-
-        poids_comptage = {lien[k]: v for k, v in variance_req.items() if k in lien}
+        variance_req_comptage = {lien_comptage_req[k]: v for k, v in variance_req.items() if k in lien_comptage_req}
         results = []
-        for i, (key, request) in enumerate(lien.items()):
-            scale = np.sqrt(variance_atteinte[key])
+        for i, (key, request) in enumerate(lien_comptage_req.items()):
+            scale = np.sqrt(variance_estimation[key])
             results.append({"requête": request, "écart type": scale, "variable": key})
-        return results, poids_comptage, poids_estimateur
-
+        return results, variance_req_comptage, poids_estimateur, lien_comptage_req
 
     @reactive.Calc
     def X_total():
-        weights = normalize_weights(requetes(), input)
+        weights = normalized_weights()
         results = []
-        reqs = {k: v for k, v in requetes().items() if v["type"].lower() in ["total"]}
-        for i, (key, request) in enumerate(reqs.items()):
+        req_total = {k: v for k, v in requetes().items() if v["type"].lower() in ["total", "sum", "somme"]}
+        for i, (key, request) in enumerate(req_total.items()):
             poids = weights[key]
             v_min, v_max = request["bounds"]
 
@@ -117,10 +118,10 @@ def server(input, output, session):
 
     @reactive.Calc
     def X_moyenne():
-        weights = normalize_weights(requetes(), input)
+        weights = normalized_weights()
         results = []
-        reqs = {k: v for k, v in requetes().items() if v["type"].lower() in ["moyenne"]}
-        for i, (key, request) in enumerate(reqs.items()):
+        req_moyenne = {k: v for k, v in requetes().items() if v["type"].lower() in ["moyenne"]}
+        for i, (key, request) in enumerate(req_moyenne.items()):
             poids = weights[key]
             v_min, v_max = request["bounds"]
 
@@ -136,10 +137,10 @@ def server(input, output, session):
 
     @reactive.Calc
     def X_quantile():
-        weights = normalize_weights(requetes(), input)
+        weights = normalized_weights()
         results = []
-        reqs = {k: v for k, v in requetes().items() if v["type"].lower() in ["quantile"]}
-        for i, (key, request) in enumerate(reqs.items()):
+        req_quantile = {k: v for k, v in requetes().items() if v["type"].lower() in ["quantile"]}
+        for i, (key, request) in enumerate(req_quantile.items()):
             poids = weights[key]
 
             context_param = {
@@ -148,9 +149,9 @@ def server(input, output, session):
                 "margins": [dp.polars.Margin(max_partition_length=10000)],
             }
 
-            context_rho, context_eps = update_context(context_param, input.budget_total(), [], [1])
+            context_comptage, context_moy_tot, context_quantile = update_context(context_param, input.budget_total(), 0, [], [], [1])
 
-            resultat_dp = process_request_dp(context_rho, context_eps, key_values(), request)
+            resultat_dp = process_request_dp(context_comptage, context_moy_tot, context_quantile, key_values(), request)
             nb_candidat = resultat_dp.precision(
                 data=dataset().lazy(),
                 epsilon=np.sqrt(8 * input.budget_total() * poids)
@@ -164,57 +165,52 @@ def server(input, output, session):
     @reactive.event(input.confirm_validation)
     async def req_dp_display():
         data_requetes = requetes()
-        weights = normalize_weights(requetes(), input)
+        weights = normalized_weights()
 
-        _, poids_requetes_comptage_special, poids_estimateur = X_count()
+        _, variance_req_comptage, poids_estimateur, lien_comptage_req = X_count()
 
-        poids_requetes_comptage_special = [
-            poids_requetes_comptage_special[clef]
-            for clef, requete in data_requetes.items()
-            if requete["type"] == "Comptage"
-        ]
+        variance_req_comptage = [variance for variance in variance_req_comptage.values()]
 
         poids_requetes_comptage = [
             weights[clef]
             for clef, requete in data_requetes.items()
-            if requete["type"] == "Comptage"
+            if requete["type"].lower() in ["count", "comptage"]
         ]
 
         poids_requetes_moyenne_total = [
             weights[clef]
             for clef, requete in data_requetes.items()
-            if requete["type"] != "Quantile" and requete["type"] != "Comptage"
+            if requete["type"].lower() != "quantile" and requete["type"].lower() not in ["count", "comptage"]
         ]
 
         poids_requetes_quantile = [
             weights[clef]
             for clef, requete in data_requetes.items()
-            if requete["type"] == "Quantile"
+            if requete["type"].lower() == "quantile"
         ]
 
         context_param = {
             "data": dataset().lazy(),
             "privacy_unit": dp.unit_of(contributions=1),
-            "margins": [dp.polars.Margin(max_partition_length=10000)],
+            "margins": [dp.polars.Margin(max_partition_length=70_000_000)],
         }
 
         budget_comptage = sum(poids_requetes_comptage) * input.budget_total()
 
-        context_comptage, context_moy_tot, context_quantile = update_context_spec(
-            context_param, input.budget_total(), budget_comptage, poids_requetes_comptage_special, poids_requetes_moyenne_total, poids_requetes_quantile
+        context_comptage, context_moy_tot, context_quantile = update_context(
+            context_param, input.budget_total(), budget_comptage, variance_req_comptage, poids_requetes_moyenne_total, poids_requetes_quantile
         )
 
         # --- Barre de progression ---
         with ui.Progress(min=0, max=len(data_requetes)) as p:
             p.set(0, message="Traitement en cours...", detail="Analyse requête par requête...")
-            affichage = await affichage_requete_dp_spec(context_comptage, context_moy_tot, context_quantile, key_values(), data_requetes, p, resultats_df, poids_estimateur)
+            await calculer_toutes_les_requetes(context_comptage, context_moy_tot, context_quantile, key_values(), data_requetes, p, resultats_df, dataset())
 
-        return affichage
-
+        return afficher_resultats(resultats_df, requetes(), poids_estimateur, lien_comptage_req)
 
     @render_widget
     def plot_comptage():
-        result, _, _ = X_count()
+        result, _, _, _ = X_count()
         df = pd.DataFrame(result)
         return create_barplot(df, x_col="requête", y_col="écart type", hoover="variable")
 
@@ -239,7 +235,7 @@ def server(input, output, session):
 
     # Page 1 ----------------------------------
 
-    # Lire le dataset
+    # Lire le dataset si importé sinon dataset déjà en mémoire
     @reactive.Calc
     def dataset():
         file = input.dataset_input()
@@ -273,6 +269,7 @@ def server(input, output, session):
 
     # Page 2 ----------------------------------
 
+    # Liste les variables qualitatives et quatitatives du jeu de données actuel
     @reactive.Calc
     def variable_choices():
         df = dataset()
@@ -296,6 +293,7 @@ def server(input, output, session):
             "🧮 Quantitatives": {col: col for col in quantitative}
         }
 
+    # Extrait les modalités uniques des variavles qualitatives
     @reactive.Calc
     def key_values():
         df = dataset()
@@ -303,7 +301,7 @@ def server(input, output, session):
         # Détecter les colonnes qualitatives (str ou catégorie)
         qualitatif_cols = [
             col for col, dtype in zip(df.columns, df.dtypes)
-            if dtype in [pl.Utf8, pl.Categorical]
+            if dtype in [pl.Utf8, pl.Categorical, pl.Boolean]
         ]
 
         # Extraire les modalités uniques, triées, sans NaN
@@ -318,6 +316,7 @@ def server(input, output, session):
         ui.update_selectize("variable", choices=variable_choices())
         ui.update_selectize("group_by", choices=variable_choices())
 
+    # Lecture du json contenant les requêtes
     @reactive.effect
     @reactive.event(input.request_input)
     def _():
@@ -332,6 +331,7 @@ def server(input, output, session):
             except json.JSONDecodeError:
                 ui.notification_show("❌ Fichier JSON invalide", type="error")
 
+    # Téléchargement du json contenant les requêtes
     @output
     @render.download(filename=lambda: "requetes_exportees.json")
     def download_json():
@@ -716,6 +716,7 @@ def server(input, output, session):
             *make_radio_buttons(requetes(), ["Quantile"]),
             col_widths=3
         )
+
 
 app = App(app_ui, server, static_assets=www_dir)
 # shiny run --reload shiny_app.py

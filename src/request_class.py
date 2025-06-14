@@ -209,8 +209,8 @@ class mean_dp(request_dp):
             len_expr = len_expr.fill_nan(1)
 
         expr = (
-            total_expr.dp.sum(bounds=(l, u)).alias("total"),
-            len_expr.dp.sum(bounds=(1, 1)).alias("len")
+            total_expr.dp.sum(bounds=(l, u)).alias("sum"),
+            len_expr.dp.sum(bounds=(1, 1)).alias("count")
         )
 
         if self.filtre is not None:

@@ -5,14 +5,14 @@ from scipy.optimize import fsolve
 import opendp.prelude as dp
 from collections import defaultdict
 from src.constant import (
-    OPS
+    OPS, radio_to_weight
 )
 
 
-def update_context_spec(CONTEXT_PARAM, budget_total, budget_comptage, poids_requetes_comptage_special, poids_requetes_moyenne_total, poids_requetes_quantile):
+def update_context(CONTEXT_PARAM, budget_total, budget_comptage, poids_requetes_comptage, poids_requetes_moyenne_total, poids_requetes_quantile):
 
     budget_moyenne_total = budget_total * sum(poids_requetes_moyenne_total)
-    eps_quantile = np.sqrt(8 * budget_total * sum(poids_requetes_quantile))
+    budget_quantile = np.sqrt(8 * budget_total * sum(poids_requetes_quantile))
 
     if budget_comptage == 0:
         context_comptage = None
@@ -20,7 +20,7 @@ def update_context_spec(CONTEXT_PARAM, budget_total, budget_comptage, poids_requ
         context_comptage = dp.Context.compositor(
             **CONTEXT_PARAM,
             privacy_loss=dp.loss_of(rho=budget_comptage),
-            split_by_weights=poids_requetes_comptage_special
+            split_by_weights=poids_requetes_comptage
         )
 
     if budget_moyenne_total == 0:
@@ -31,44 +31,16 @@ def update_context_spec(CONTEXT_PARAM, budget_total, budget_comptage, poids_requ
             privacy_loss=dp.loss_of(rho=budget_moyenne_total),
             split_by_weights=poids_requetes_moyenne_total
         )
-    if eps_quantile == 0:
+    if budget_quantile == 0:
         context_quantile = None
     else:
         context_quantile = dp.Context.compositor(
             **CONTEXT_PARAM,
-            privacy_loss=dp.loss_of(epsilon=eps_quantile),
+            privacy_loss=dp.loss_of(epsilon=budget_quantile),
             split_by_weights=poids_requetes_quantile
         )
 
     return context_comptage, context_moyenne_total, context_quantile
-
-
-def update_context(CONTEXT_PARAM, rho_budget, poids_requetes_rho, poids_requetes_quantile):
-
-    rho_utilise = rho_budget * (1 - sum(poids_requetes_quantile))
-    eps_quantile = np.sqrt(8 * rho_budget * sum(poids_requetes_quantile))
-
-    if rho_utilise != 0:
-        context_rho = dp.Context.compositor(
-                **CONTEXT_PARAM,
-                privacy_loss=dp.loss_of(rho=rho_utilise),
-                split_by_weights=poids_requetes_rho
-            )
-
-    else:
-        context_rho = None
-
-    if eps_quantile != 0:
-        context_eps = dp.Context.compositor(
-                **CONTEXT_PARAM,
-                privacy_loss=dp.loss_of(epsilon=eps_quantile),
-                split_by_weights=poids_requetes_quantile
-            )
-
-    else:
-        context_eps = None
-
-    return context_rho, context_eps
 
 
 # Fonction pour forcer une variable à 0 en modifiant A et b
@@ -270,6 +242,7 @@ def manual_quantile_score(data, candidats, alpha, et_si=False):
 
     return np.array(scores), max(alpha_num, alpha_denum - alpha_num)
 
+
 def organiser_par_by(dico_requetes, dico_valeurs):
     result = defaultdict(dict)
     result_bis = defaultdict(dict)
@@ -298,23 +271,7 @@ def organiser_par_by(dico_requetes, dico_valeurs):
     return dict(result), dict(result_bis)
 
 
-def count_modalities(df: pl.DataFrame) -> dict:
-    if df is None:
-        return {}
-
-    # On sélectionne les colonnes de type 'str' ou 'bool'
-    qualitative_cols = [
-        col for col, dtype in zip(df.columns, df.dtypes)
-        if dtype in [pl.Utf8, pl.Boolean]
-    ]
-
-    # Calcul du nombre de modalités uniques par colonne
-    result = {col: df[col].n_unique() for col in qualitative_cols}
-    return result
-
-
 def normalize_weights(request, input) -> dict:
-    radio_to_weight = {1: 1, 2: 0.5, 3: 0.25}
     raw_weights = {
         key: radio_to_weight.get(float(getattr(input, key)()), 0)
         for key, requete in request.items()

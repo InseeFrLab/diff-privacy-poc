@@ -1,41 +1,29 @@
 from src.constant import (
     regions_france, dataset
 )
-from src.process_tools import process_request
+from src.process_tools import (
+    process_request
+)
 
 from shiny import ui
 from shinywidgets import output_widget
-import asyncio
-import polars as pl
 
 
 # Fonctions pour du layout ----------------------------------
 
-async def affichage_requete_dp_spec(context_comptage, context_moyenne_total, context_quantile, key_values, requetes, progress, results_store, poids_estimateur):
-    from src.process_tools import process_request_dp_spec
-    panels = []
 
-    # Copie de l'état actuel du store
+def afficher_resultats(results_store, requetes, poids_estimateur, lien_comptage_req):
     current_results = results_store()
+    panels = []
+    final_results = {}
+    for key, req in requetes.items():
+        df_result = current_results[key]
 
-    for i, (key, req) in enumerate(requetes.items(), start=1):
-        progress.set(i, message=f"Requête {key} — {req.get('type', '—')}", detail="Calcul en cours...")
-        await asyncio.sleep(0.05)
+        # 👉 Ici tu peux effectuer un traitement global sur plusieurs df si nécessaire
+        if req.get("type") == "Comptage":
+            df_result = ameliorer_comptage(df_result, poids_estimateur, results_store(), lien_comptage_req)
 
-        resultat_dp = process_request_dp_spec(context_comptage, context_moyenne_total, context_quantile, key_values, req).execute()
-        df_result = resultat_dp.release().collect()
-
-        if req.get("type") == "Moyenne":
-            df_result = df_result.with_columns(mean=pl.col.total / pl.col.len)
-
-        if req.get("by") is not None:
-            df_result = df_result.sort(by=req.get("by"))
-            first_col = df_result.columns[0]
-            new_order = df_result.columns[1:] + [first_col]
-            df_result = df_result.select(new_order)
-
-        # ✅ Stocker le résultat sous forme pandas
-        current_results[key] = df_result.to_pandas()
+        final_results[key] = df_result
 
         param_card = ui.card(
             ui.card_header("Paramètres"),
@@ -44,7 +32,7 @@ async def affichage_requete_dp_spec(context_comptage, context_moyenne_total, con
 
         result_card = ui.card(
             ui.card_header("Résultats après application de la DP"),
-            ui.HTML(df_result.to_pandas().to_html(
+            ui.HTML(df_result.to_html(
                 classes="table table-striped table-hover table-sm text-center align-middle",
                 border=0,
                 index=False
@@ -63,68 +51,71 @@ async def affichage_requete_dp_spec(context_comptage, context_moyenne_total, con
             ui.accordion_panel(f"{key} — {req.get('type', '—')}", content_row)
         )
 
-    # ✅ Mise à jour finale du reactive.Value
-    results_store.set(current_results)
+    results_store.set(final_results)
 
     return ui.accordion(*panels)
 
 
-async def affichage_requete_dp(context_rho, context_eps, key_values, requetes, progress, results_store):
-    from src.process_tools import process_request_dp
-    panels = []
+def ameliorer_comptage(df_result, poids_estimateur, results_store, lien_comptage_req):
+    # ✅ 1. Identifier les variables de croisement dans le tableau cible
+    all_cols = df_result.columns.tolist()
+    if 'count' not in all_cols:
+        return df_result  # Pas un comptage standard
+    vars_croisement = [col for col in all_cols if col != 'count']
 
-    # Copie de l'état actuel du store
-    current_results = results_store()
+    # Clef de dictionnaire : tuple ou string
+    vars_key = tuple(vars_croisement) if len(vars_croisement) > 1 else vars_croisement[0] if vars_croisement else "Total"
 
-    for i, (key, req) in enumerate(requetes.items(), start=1):
-        progress.set(i, message=f"Requête {key} — {req.get('type', '—')}", detail="Calcul en cours...")
-        await asyncio.sleep(0.05)
+    poids_dict = poids_estimateur[vars_key]
+    df_result = df_result.copy()
+    df_result['count_amelioree'] = 0.0
 
-        resultat_dp = process_request_dp(context_rho, context_eps, key_values, req).execute()
-        df_result = resultat_dp.release().collect()
+    for ref_key, poids in poids_dict.items():
+        if poids == 0:
+            continue
 
-        if req.get("type") == "Moyenne":
-            df_result = df_result.with_columns(mean=pl.col.total / pl.col.len)
+        df_ref = results_store.get(lien_comptage_req[ref_key])
+        if df_ref is None:
+            continue
 
-        if req.get("by") is not None:
-            df_result = df_result.sort(by=req.get("by"))
-            first_col = df_result.columns[0]
-            new_order = df_result.columns[1:] + [first_col]
-            df_result = df_result.select(new_order)
+        df_ref = df_ref.copy()
 
-        # ✅ Stocker le résultat sous forme pandas
-        current_results[key] = df_result.to_pandas()
+        if ref_key == vars_key:
+            # Cas simple : même tableau → on prend tel quel
+            df_result['count_amelioree'] += poids * df_result['count']
 
-        param_card = ui.card(
-            ui.card_header("Paramètres"),
-            make_card_body(req)
-        )
+        else:
+            # Projection → on agrège df_ref pour retrouver les dimensions de df_result
+            if isinstance(ref_key, str):
+                group_vars = [ref_key]
+            else:
+                group_vars = list(ref_key)
 
-        result_card = ui.card(
-            ui.card_header("Résultats après application de la DP"),
-            ui.HTML(df_result.to_pandas().to_html(
-                classes="table table-striped table-hover table-sm text-center align-middle",
-                border=0,
-                index=False
-            )),
-            height="300px",
-            fillable=False,
-            full_screen=True
-        )
+            # Intersections entre ref et cible
+            common_vars = list(set(group_vars) & set(vars_croisement))
 
-        content_row = ui.row(
-            ui.column(4, param_card),
-            ui.column(8, result_card)
-        )
+            if common_vars == []:
+                # Total : pas de groupement → somme globale
+                total_ref = df_ref["count"].sum()
+                # Ajoute la colonne count_ref à df_result avec la même valeur partout
+                df_result["count_amelioree"] += poids * total_ref
+            else:
+                # Cas général avec groupement
+                df_proj = (
+                    df_ref
+                    .groupby(common_vars, as_index=False)
+                    .agg({'count': 'sum'})
+                    .rename(columns={'count': 'count_ref'})
+                )
 
-        panels.append(
-            ui.accordion_panel(f"{key} — {req.get('type', '—')}", content_row)
-        )
+                # Jointure normale
+                merged = df_result.merge(df_proj, on=common_vars, how='left')
+                df_result['count_amelioree'] += poids * merged['count_ref'].fillna(0)
 
-    # ✅ Mise à jour finale du reactive.Value
-    results_store.set(current_results)
-
-    return ui.accordion(*panels)
+    # ✅ Remplacer la colonne count par la version améliorée
+    df_result['count'] = df_result['count_amelioree'].round(0)
+    df_result = df_result.drop(columns=['count_amelioree'])
+    return df_result
 
 
 def make_radio_buttons(request, filter_type: list[str]):
@@ -163,10 +154,10 @@ def make_card_body(req):
 def affichage_requete(requetes, dataset):
 
     panels = []
+    df = dataset.lazy()
 
     for key, req in requetes.items():
         # Colonne de gauche : paramètres
-        df = dataset.lazy()
         resultat = process_request(df, req)
 
         if req.get("by") is not None:
@@ -659,13 +650,4 @@ def page_etat_budget_dataset():
             ui.output_data_frame("data_budget_view")
         ),
         ui.output_ui("budget_display")
-    )
-
-
-# Page A propos ----------------------------------
-
-def page_a_propos():
-    return ui.nav_panel(
-        "A propos",
-        ui.h3("À compléter...")
     )
