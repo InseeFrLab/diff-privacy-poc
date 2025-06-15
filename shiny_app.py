@@ -2,7 +2,7 @@
 from src.plots import (
     create_histo_plot, create_fc_emp_plot,
     create_score_plot, create_proba_plot,
-    create_barplot, create_scatterplot, create_grouped_barplot_cv
+    create_barplot, create_grouped_barplot_cv
 )
 from src.layout import (
     page_donnees,
@@ -279,15 +279,11 @@ def server(input, output, session):
     def plot_total():
         df = pd.DataFrame(X_total())
         return create_grouped_barplot_cv(df)
-        return create_scatterplot(df, x_col="cv (%)", y_col="requête", size_col="cv (%)")
 
     @render_widget
     def plot_moyenne():
         df = pd.DataFrame(X_moyenne())
         return create_grouped_barplot_cv(df)
-        if not df.empty:
-            df = df.explode("cv (%)").reset_index(drop=True)
-        return create_scatterplot(df, x_col="cv (%)", y_col="requête", size_col="cv (%)")
 
     @render_widget
     def plot_quantile():
