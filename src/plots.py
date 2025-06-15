@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 import plotly.colors as pc
 
 
-def create_scatterplot(df, x_col, y_col, size_col=False):
+def create_grouped_barplot_cv(df):
     fig = go.Figure()
 
     if df.empty:
@@ -22,57 +22,49 @@ def create_scatterplot(df, x_col, y_col, size_col=False):
         )
         return fig
 
-    # Gestion des couleurs par requête
-    unique_keys = df["requête"].unique()
+    requetes_uniques = df["requête"].unique()
     color_palette = pc.qualitative.Plotly
-    color_map = {k: color_palette[i % len(color_palette)] for i, k in enumerate(unique_keys)}
+    color_map = {req: color_palette[i % len(color_palette)] for i, req in enumerate(requetes_uniques)}
 
-    # Sécurisation des tailles de points
-    if size_col:
-        try:
-            marker_size = pd.to_numeric(df[size_col], errors="coerce")
-            if marker_size.isna().all():
-                marker_size = 10
-                size_col = False
-        except Exception:
-            marker_size = 10
-            size_col = False
-    else:
-        marker_size = 10
+    for req in requetes_uniques:
+        sous_df = df[df["requête"] == req]
 
-    # Construction du scatter plot
-    fig.add_trace(
-        go.Scatter(
-            x=df[x_col],
-            y=df[y_col],
-            mode="markers",
-            marker=dict(
-                size=marker_size,
-                sizemode="area",
-                sizeref=2. * marker_size.max() / (40.**2) if size_col else 1,
-                sizemin=5,
-                color=[color_map[k] for k in df["requête"]],
-                opacity=0.8,
-                line=dict(width=1, color='white')
-            ),
-            text=df["requête"],
-            hovertemplate=(
-                f"<b>%{{text}}</b>"
-                + (f"<br>{x_col}: %{{x:.2f}}" if pd.api.types.is_numeric_dtype(df[x_col]) else f"<br>{x_col}: %{{x}}")
-                + (f"<br>{y_col}: %{{y:.2f}}" if pd.api.types.is_numeric_dtype(df[y_col]) else f"<br>{y_col}: %{{y}}")
-                + (f"<br>{size_col}: %{{marker.size:.2f}}" if size_col and size_col != x_col and size_col != y_col else "")
-                + "<extra></extra>"
+        # Texte personnalisé à afficher sur les barres
+        custom_text = [
+            f"{label}<br>CV : {cv:.1f}%" for label, cv in zip(sous_df["label"], sous_df["cv (%)"])
+        ]
+
+        fig.add_trace(
+            go.Bar(
+                x=sous_df["cv (%)"],
+                y=sous_df["label"],
+                name=req,
+                orientation='h',
+                marker=dict(
+                    color=color_map[req],
+                    line=dict(width=1, color="black"),
+                    opacity=0.85,
+                ),
+                text=custom_text,
+                textposition="auto",
+                textfont=dict(size=14),
+                hovertemplate=(
+                    f"<b>Requête : {req}</b><br>"
+                    "CV : %{x:.2f}%<br>"
+                    "%{y}<extra></extra>"
+                ),
             )
         )
-    )
 
     fig.update_layout(
-        xaxis_title=x_col,
-        yaxis_title=y_col,
+        barmode='group',
+        xaxis_title="Coefficient de variation (%)",
+        yaxis_title="",
         plot_bgcolor='white',
         margin=dict(t=40, r=30, l=60, b=60),
         xaxis=dict(showgrid=True, gridcolor='lightgray', linecolor='black', linewidth=1, mirror=True),
         yaxis=dict(showgrid=True, gridcolor='lightgray', linecolor='black', linewidth=1, mirror=True),
+        legend=dict(title="Requête", orientation="v", x=1.02, y=1),
     )
 
     return fig
@@ -226,22 +218,42 @@ def create_score_plot(df, alpha, epsilon, cmin, cmax, cstep):
 
 
 def create_proba_plot(df, alpha, epsilon, cmin, cmax, cstep):
+    import numpy as np
+    import plotly.graph_objects as go
+
     candidats = np.linspace(cmin, cmax, cstep + 1).tolist()
     scores, sensi = manual_quantile_score(df['body_mass_g'], candidats, alpha=alpha, et_si=True)
     proba_non_norm = np.exp(-epsilon * scores / (2 * sensi))
     proba = proba_non_norm / np.sum(proba_non_norm)
-    seuil = np.quantile(proba, 0.95)
+
+    # Tri décroissant des probabilités
+    sorted_indices = np.argsort(proba)[::-1]
+    sorted_proba = np.array(proba)[sorted_indices]
+
+    # Sélection des indices jusqu'à ce que la somme atteigne 95%
+    cumulative = np.cumsum(sorted_proba)
+    top95_mask = cumulative <= 0.95
+    if not np.all(top95_mask):  # Inclure le premier élément qui fait dépasser 95%
+        top95_mask[np.argmax(cumulative > 0.95)] = True
+
+    red_indices = sorted_indices[top95_mask]
+    blue_indices = sorted_indices[~top95_mask]
 
     trace_red = go.Scatter(
-        x=[c for c, p in zip(candidats, proba) if p >= seuil],
-        y=[p for p in proba if p >= seuil],
-        mode='markers', marker=dict(color='red', size=10), name='≥ 95% des proba'
+        x=[candidats[i] for i in red_indices],
+        y=[proba[i] for i in red_indices],
+        mode='markers',
+        marker=dict(color='red', size=10),
+        name='Top 95% cumulés'
     )
     trace_blue = go.Scatter(
-        x=[c for c, p in zip(candidats, proba) if p < seuil],
-        y=[p for p in proba if p < seuil],
-        mode='markers', marker=dict(color='blue', size=10), name='< 95% des proba'
+        x=[candidats[i] for i in blue_indices],
+        y=[proba[i] for i in blue_indices],
+        mode='markers',
+        marker=dict(color='blue', size=10),
+        name='Autres'
     )
+
     layout = go.Layout(
         xaxis=dict(title="Candidat", showgrid=True),
         yaxis=dict(title="Probabilité", showgrid=True),

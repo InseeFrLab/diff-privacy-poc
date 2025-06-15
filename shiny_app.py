@@ -2,7 +2,7 @@
 from src.plots import (
     create_histo_plot, create_fc_emp_plot,
     create_score_plot, create_proba_plot,
-    create_barplot, create_scatterplot
+    create_barplot, create_scatterplot, create_grouped_barplot_cv
 )
 from src.layout import (
     page_donnees,
@@ -85,9 +85,12 @@ def server(input, output, session):
 
     @reactive.Calc
     def X_count():
+        if input.budget_total() == 0:
+            return None, None, None, None
+        data_requetes = requetes()
         poids = normalized_weights()  # Poids normalisé de toutes les requêtes
         nb_modalite = {k: len(v) for k, v in key_values().items()}
-        req_comptage = {k: v for k, v in requetes().items() if v["type"].lower() in ["count", "comptage"]}
+        req_comptage = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["count", "comptage"]}
         poids_comptage_req = {k: v for k, v in poids.items() if k in req_comptage.keys()}
         budget_comptage = input.budget_total() * sum(poids_comptage_req.values())
         poids_comptage, lien_comptage_req = organiser_par_by(req_comptage, poids)
@@ -102,44 +105,102 @@ def server(input, output, session):
 
     @reactive.Calc
     def X_total():
+        if input.budget_total() == 0:
+            return None
+        data_requetes = requetes()
         weights = normalized_weights()
         results = []
-        req_total = {k: v for k, v in requetes().items() if v["type"].lower() in ["total", "sum", "somme"]}
-        for i, (key, request) in enumerate(req_total.items()):
+
+        req_total = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["total", "sum", "somme"]}
+        for key, request in req_total.items():
             poids = weights[key]
             v_min, v_max = request["bounds"]
+            variable = request.get("variable", "Variable")
 
             scale = max(abs(v_min), abs(v_max)) / np.sqrt(2 * input.budget_total() * poids)
             resultat = process_request(dataset().lazy(), request)
-            list_cv = 100 * scale/resultat["sum"]
-            results.append({"requête": key, "cv (%)": list_cv})
+
+            for row in resultat.iter_rows(named=True):
+                # Extraction des modalités croisées
+                modalites = [str(v) for k, v in row.items() if k != "sum"]
+
+                # Construction de l’étiquette
+                if not modalites:
+                    label = f"{variable}"
+                else:
+                    label = f"{variable} ({', '.join(modalites)})"
+
+                # Calcul du CV
+                cv = 100 * scale / row["sum"] if row["sum"] != 0 else float("inf")
+
+                results.append({
+                    "requête": key,
+                    "label": label,
+                    "cv (%)": cv
+                })
+
+            results.sort(key=lambda x: x["cv (%)"])
 
         return results
 
     @reactive.Calc
     def X_moyenne():
+        if input.budget_total() == 0:
+            return None
+
+        data_requetes = requetes()
         weights = normalized_weights()
         results = []
-        req_moyenne = {k: v for k, v in requetes().items() if v["type"].lower() in ["moyenne"]}
-        for i, (key, request) in enumerate(req_moyenne.items()):
+
+        req_moyenne = {
+            k: v for k, v in data_requetes.items()
+            if v["type"].lower() in ["moyenne"]
+        }
+
+        for key, request in req_moyenne.items():
             poids = weights[key]
             v_min, v_max = request["bounds"]
+            variable = request.get("variable", "Variable")
 
             scale_tot = max(abs(v_min), abs(v_max)) / np.sqrt(input.budget_total() * poids)
             scale_len = 1 / np.sqrt(input.budget_total() * poids)
+
             resultat = process_request(dataset().lazy(), request)
-            list_cv_tot = scale_tot/resultat["sum"]
-            list_cv_len = scale_len/resultat["count"]
-            list_cv = [100 * np.sqrt(list_cv_tot[i]**2 + list_cv_len[i]**2) for i in range(len(list_cv_tot))]
-            results.append({"requête": key, "cv (%)": list_cv, "cv_tot (%)": 100 * list_cv_tot, "cv_len (%)": 100 * list_cv_len})
+
+            for row in resultat.iter_rows(named=True):
+                total = row.get("sum", 0)
+                count = row.get("count", 1)
+
+                cv_total = scale_tot / total if total != 0 else float("inf")
+                cv_count = scale_len / count if count != 0 else float("inf")
+                cv = 100 * np.sqrt(cv_total**2 + cv_count**2)
+
+                modalites = [str(v) for k, v in row.items() if k not in ["sum", "count", "mean"]]
+
+                if not modalites:
+                    label = f"{variable}"
+                else:
+                    label = f"{variable} ({', '.join(modalites)})"
+
+                results.append({
+                    "requête": key,
+                    "label": label,
+                    "cv (%)": cv
+                })
+
+            results.sort(key=lambda x: x["cv (%)"])
 
         return results
 
+
     @reactive.Calc
     def X_quantile():
+        if input.budget_total() == 0:
+            return None
+        data_requetes = requetes()
         weights = normalized_weights()
         results = []
-        req_quantile = {k: v for k, v in requetes().items() if v["type"].lower() in ["quantile"]}
+        req_quantile = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["quantile"]}
         for i, (key, request) in enumerate(req_quantile.items()):
             poids = weights[key]
 
@@ -152,11 +213,11 @@ def server(input, output, session):
             context_comptage, context_moy_tot, context_quantile = update_context(context_param, input.budget_total(), 0, [], [], [1])
 
             resultat_dp = process_request_dp(context_comptage, context_moy_tot, context_quantile, key_values(), request)
-            nb_candidat = resultat_dp.precision(
+            intervalle_candidats = resultat_dp.precision(
                 data=dataset().lazy(),
                 epsilon=np.sqrt(8 * input.budget_total() * poids)
             )
-            results.append({"requête": key, "candidats": nb_candidat})
+            results.append({"requête": key, "candidats": intervalle_candidats})
 
         return results
 
@@ -169,7 +230,7 @@ def server(input, output, session):
 
         _, variance_req_comptage, poids_estimateur, lien_comptage_req = X_count()
 
-        variance_req_comptage = [variance for variance in variance_req_comptage.values()]
+        poids_variance_req_comptage = [variance for variance in variance_req_comptage.values()]
 
         poids_requetes_comptage = [
             weights[clef]
@@ -198,13 +259,13 @@ def server(input, output, session):
         budget_comptage = sum(poids_requetes_comptage) * input.budget_total()
 
         context_comptage, context_moy_tot, context_quantile = update_context(
-            context_param, input.budget_total(), budget_comptage, variance_req_comptage, poids_requetes_moyenne_total, poids_requetes_quantile
+            context_param, input.budget_total(), budget_comptage, poids_variance_req_comptage, poids_requetes_moyenne_total, poids_requetes_quantile
         )
 
         # --- Barre de progression ---
         with ui.Progress(min=0, max=len(data_requetes)) as p:
             p.set(0, message="Traitement en cours...", detail="Analyse requête par requête...")
-            await calculer_toutes_les_requetes(context_comptage, context_moy_tot, context_quantile, key_values(), data_requetes, p, resultats_df, dataset())
+            await calculer_toutes_les_requetes(context_comptage, context_moy_tot, context_quantile, key_values(), data_requetes, p, resultats_df, dataset(), variance_req_comptage)
 
         return afficher_resultats(resultats_df, requetes(), poids_estimateur, lien_comptage_req)
 
@@ -217,16 +278,16 @@ def server(input, output, session):
     @render_widget
     def plot_total():
         df = pd.DataFrame(X_total())
-        if not df.empty:
-            df = df.explode("cv (%)").reset_index(drop=True)
+        return create_grouped_barplot_cv(df)
         return create_scatterplot(df, x_col="cv (%)", y_col="requête", size_col="cv (%)")
 
     @render_widget
     def plot_moyenne():
         df = pd.DataFrame(X_moyenne())
+        return create_grouped_barplot_cv(df)
         if not df.empty:
-            df = df.explode(["cv (%)", "cv_tot (%)", "cv_len (%)"]).reset_index(drop=True)
-        return create_scatterplot(df, x_col="cv_tot (%)", y_col="cv_len (%)", size_col="cv (%)")
+            df = df.explode("cv (%)").reset_index(drop=True)
+        return create_scatterplot(df, x_col="cv (%)", y_col="requête", size_col="cv (%)")
 
     @render_widget
     def plot_quantile():
@@ -343,7 +404,7 @@ def server(input, output, session):
     @reactive.effect
     @reactive.event(input.add_req)
     def _():
-        current = requetes()
+        current = requetes().copy()
 
         raw_min = input.borne_min()
         raw_max = input.borne_max()
@@ -402,7 +463,7 @@ def server(input, output, session):
     @reactive.effect
     @reactive.event(input.delete_btn)
     def _():
-        current = requetes()
+        current = requetes().copy()
         targets = input.delete_req()  # ceci est une liste ou un tuple de valeurs
 
         if not targets:
@@ -429,7 +490,7 @@ def server(input, output, session):
     @reactive.effect
     @reactive.event(input.delete_all_btn)
     def _():
-        current = requetes()
+        current = requetes().copy()
         if current:
             current.clear()  # Vide toutes les requêtes
             requetes.set(current)  # Met à jour le reactive.Value
@@ -477,33 +538,19 @@ def server(input, output, session):
     @render.data_frame
     @reactive.event(input.scale_gauss)
     def cross_table_dp():
-        from src.request_class import count_dp
+        # Table originale sans bruit
+        table = data_example.groupby(["species", "island"]).size().unstack(fill_value=0)
+        flat_table = table.reset_index().melt(id_vars="species", var_name="island", value_name="count")
+        flat_table = flat_table.sort_values(by=["species", "island"]).reset_index(drop=True)
 
-        key_values = {
-            "species": ["Adelie", "Chinstrap", "Gentoo"],
-            "island": ["Biscoe", "Dream", "Torgersen"]
-        }
+        # Ajout de bruit gaussien à la colonne 'count'
+        sigma = input.scale_gauss()
+        flat_table["count"] = flat_table["count"] + np.random.normal(loc=0, scale=sigma, size=len(flat_table))
 
-        df_lazy = pl.from_pandas(data_example).lazy()
+        # Optionnel : arrondir ou tronquer selon les besoins
+        flat_table["count"] = flat_table["count"].round(0).clip(lower=0).astype(int)
 
-        context_rho = dp.Context.compositor(
-            data=df_lazy,
-            privacy_unit=dp.unit_of(contributions=1),
-            privacy_loss=dp.loss_of(rho=1/(2*input.scale_gauss()**2)),
-            split_by_weights=[1],
-            margins=[
-                dp.polars.Margin(max_partition_length=1000)
-            ]
-        )
-
-        tableau_dp = count_dp(context_rho, key_values, by=["species", "island"], variable=None, filtre=None).execute().release().collect()
-
-        tableau_dp = tableau_dp.sort(by=["species", "island"])
-        first_col = tableau_dp.columns[0]
-        new_order = tableau_dp.columns[1:] + [first_col]
-        tableau_dp = tableau_dp.select(new_order)
-
-        return tableau_dp
+        return flat_table
 
     @output
     @render.ui
@@ -606,25 +653,35 @@ def server(input, output, session):
     @reactive.Effect
     @reactive.event(input.confirm_validation)
     def _():
-        page_autorisee.set(True)
-        ui.modal_remove()
-        ui.update_navs("page", selected="Résultat DP")
 
-        nouvelle_ligne = pd.DataFrame([{
-            "nom_dataset": input.dataset_name(),
-            "echelle_geographique": input.echelle_geo(),
-            "date_ajout": datetime.now().strftime("%d/%m/%Y"),
-            "budget_dp_rho": input.budget_total()
-        }])
+        data_requetes = requetes()
 
-        fichier = Path("data/budget_dp.csv")
-        if fichier.exists():
-            nouvelle_ligne.to_csv(fichier, mode="a", header=False, index=False, encoding="utf-8")
+        if len(data_requetes) == 0:
+            ui.notification_show(f"❌ Vous devez rentrer au moins une requête avant d'accéder aux résultats.", type="error")
+
+        elif input.budget_total() == 0:
+            ui.notification_show(f"❌ Vous devez valider un budget non nul avant d'accéder aux résultats.", type="error")
+
         else:
-            nouvelle_ligne.to_csv(fichier, mode="w", header=True, index=False, encoding="utf-8")
+            page_autorisee.set(True)
+            ui.modal_remove()
+            ui.update_navs("page", selected="Résultat DP")
 
-        ui.notification_show("✅ Ligne ajoutée à `budget_dp.csv`", type="message")
-        trigger_update_budget.set(trigger_update_budget() + 1)  # 🔄 Déclenche la mise à jour
+            nouvelle_ligne = pd.DataFrame([{
+                "nom_dataset": input.dataset_name(),
+                "echelle_geographique": input.echelle_geo(),
+                "date_ajout": datetime.now().strftime("%d/%m/%Y"),
+                "budget_dp_rho": input.budget_total()
+            }])
+
+            fichier = Path("data/budget_dp.csv")
+            if fichier.exists():
+                nouvelle_ligne.to_csv(fichier, mode="a", header=False, index=False, encoding="utf-8")
+            else:
+                nouvelle_ligne.to_csv(fichier, mode="w", header=True, index=False, encoding="utf-8")
+
+            ui.notification_show("✅ Ligne ajoutée à `budget_dp.csv`", type="message")
+            trigger_update_budget.set(trigger_update_budget() + 1)  # 🔄 Déclenche la mise à jour
 
     # Stocker l'onglet actuel en réactif
     @reactive.Effect

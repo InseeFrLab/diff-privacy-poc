@@ -4,7 +4,9 @@ from src.constant import (
 from src.process_tools import (
     process_request
 )
-
+from src.fonctions import (
+    ameliorer_comptage
+)
 from shiny import ui
 from shinywidgets import output_widget
 
@@ -21,7 +23,7 @@ def afficher_resultats(results_store, requetes, poids_estimateur, lien_comptage_
 
         # 👉 Ici tu peux effectuer un traitement global sur plusieurs df si nécessaire
         if req.get("type") == "Comptage":
-            df_result = ameliorer_comptage(df_result, poids_estimateur, results_store(), lien_comptage_req)
+            df_result = ameliorer_comptage(key, df_result, poids_estimateur, results_store(), lien_comptage_req)
 
         final_results[key] = df_result
 
@@ -54,68 +56,6 @@ def afficher_resultats(results_store, requetes, poids_estimateur, lien_comptage_
     results_store.set(final_results)
 
     return ui.accordion(*panels)
-
-
-def ameliorer_comptage(df_result, poids_estimateur, results_store, lien_comptage_req):
-    # ✅ 1. Identifier les variables de croisement dans le tableau cible
-    all_cols = df_result.columns.tolist()
-    if 'count' not in all_cols:
-        return df_result  # Pas un comptage standard
-    vars_croisement = [col for col in all_cols if col != 'count']
-
-    # Clef de dictionnaire : tuple ou string
-    vars_key = tuple(vars_croisement) if len(vars_croisement) > 1 else vars_croisement[0] if vars_croisement else "Total"
-
-    poids_dict = poids_estimateur[vars_key]
-    df_result = df_result.copy()
-    df_result['count_amelioree'] = 0.0
-
-    for ref_key, poids in poids_dict.items():
-        if poids == 0:
-            continue
-
-        df_ref = results_store.get(lien_comptage_req[ref_key])
-        if df_ref is None:
-            continue
-
-        df_ref = df_ref.copy()
-
-        if ref_key == vars_key:
-            # Cas simple : même tableau → on prend tel quel
-            df_result['count_amelioree'] += poids * df_result['count']
-
-        else:
-            # Projection → on agrège df_ref pour retrouver les dimensions de df_result
-            if isinstance(ref_key, str):
-                group_vars = [ref_key]
-            else:
-                group_vars = list(ref_key)
-
-            # Intersections entre ref et cible
-            common_vars = list(set(group_vars) & set(vars_croisement))
-
-            if common_vars == []:
-                # Total : pas de groupement → somme globale
-                total_ref = df_ref["count"].sum()
-                # Ajoute la colonne count_ref à df_result avec la même valeur partout
-                df_result["count_amelioree"] += poids * total_ref
-            else:
-                # Cas général avec groupement
-                df_proj = (
-                    df_ref
-                    .groupby(common_vars, as_index=False)
-                    .agg({'count': 'sum'})
-                    .rename(columns={'count': 'count_ref'})
-                )
-
-                # Jointure normale
-                merged = df_result.merge(df_proj, on=common_vars, how='left')
-                df_result['count_amelioree'] += poids * merged['count_ref'].fillna(0)
-
-    # ✅ Remplacer la colonne count par la version améliorée
-    df_result['count'] = df_result['count_amelioree'].round(0)
-    df_result = df_result.drop(columns=['count_amelioree'])
-    return df_result
 
 
 def make_radio_buttons(request, filter_type: list[str]):
@@ -551,7 +491,7 @@ def page_conception_budget():
 def sidebar_budget():
     return ui.sidebar(
         ui.h3("Définition du budget"),
-        ui.input_numeric("budget_total", "Budget total :", 0.2, min=0.1, max=1, step=0.01),
+        ui.input_numeric("budget_total", "Budget total :", 0.1, min=0, max=1, step=0.01),
         ui.input_selectize("echelle_geo", "Echelle géographique de l'étude:", choices=regions_france, selected="France entière"),
         ui.input_selectize("dataset_name", "Nom du dataset:", choices=dataset, selected="Penguin", options={"create": True}),
         ui.input_action_button("valider_budget", "Valider le budget DP"),

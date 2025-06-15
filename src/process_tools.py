@@ -6,13 +6,18 @@ import polars as pl
 import asyncio
 
 
-async def calculer_toutes_les_requetes(context_comptage, context_moyenne_total, context_quantile, key_values, requetes, progress, results_store, dataset):
+async def calculer_toutes_les_requetes(context_comptage, context_moyenne_total, context_quantile, key_values, requetes, progress, results_store, dataset, variance_req_comptage):
     current_results = {}
     df = dataset.lazy()
 
     for i, (key, req) in enumerate(requetes.items(), start=1):
         progress.set(i, message=f"Requête {key} — {req.get('type', '—')}", detail="Calcul en cours...")
         await asyncio.sleep(0.05)
+
+        if req.get("type") == "Comptage":
+            if key not in variance_req_comptage:
+                current_results[key] = None
+                continue
 
         resultat_dp = process_request_dp(context_comptage, context_moyenne_total, context_quantile, key_values, req).execute()
         df_result = resultat_dp.release().collect()

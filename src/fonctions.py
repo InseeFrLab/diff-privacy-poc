@@ -1,12 +1,64 @@
 import re
 import numpy as np
 import polars as pl
+import pandas as pd
 from scipy.optimize import fsolve
 import opendp.prelude as dp
 from collections import defaultdict
 from src.constant import (
     OPS, radio_to_weight
 )
+
+
+def ameliorer_comptage(key, df_result, poids_estimateur, results_store, lien_comptage_req):
+    vars_key = next((k for k, v in lien_comptage_req.items() if v == key), None)
+    poids_dict = poids_estimateur[vars_key]
+    df_result_base = df_result.copy() if df_result is not None else None
+    vars_key_list = [vars_key] if isinstance(vars_key, str) else list(vars_key)
+    if df_result_base is not None:
+        df_result_base['count_amelioree'] = 0.0
+
+    for ref_key, poids in poids_dict.items():
+        if poids == 0:
+            continue
+
+        df_ref = results_store.get(lien_comptage_req[ref_key])
+        df_ref = df_ref.copy()
+
+        if ref_key == vars_key:
+            df_result_base['count_amelioree'] += poids * df_result_base['count']
+
+        else:
+            group_vars = [ref_key] if isinstance(ref_key, str) else list(ref_key)
+            common_vars = list(set(group_vars) & set(vars_key_list))
+
+            if not common_vars:
+                total_ref = df_ref["count"].sum()
+                if df_result_base is None:
+                    # Créer un DataFrame d'une seule ligne
+                    df_result_base = pd.DataFrame([{'count_amelioree': poids * total_ref}])
+                else:
+                    df_result_base['count_amelioree'] += poids * total_ref
+            else:
+                df_proj = (
+                    df_ref
+                    .groupby(common_vars, as_index=False)
+                    .agg({'count': 'sum'})
+                    .rename(columns={'count': 'count_ref'})
+                )
+
+                if df_result_base is None:
+                    df_result_base = df_proj.copy()
+                    df_result_base['count_amelioree'] = poids * df_result_base['count_ref']
+                    df_result_base = df_result_base.drop(columns=['count_ref'])
+                else:
+                    merged = df_result_base.merge(df_proj, on=common_vars, how='left')
+                    df_result_base['count_amelioree'] += poids * merged['count_ref']
+
+    # ✅ Remplacer la colonne count
+    df_result_base['count'] = df_result_base['count_amelioree'].round(0).clip(lower=0).astype(int)
+    df_result_base = df_result_base.drop(columns=['count_amelioree'])
+    return df_result_base
 
 
 def update_context(CONTEXT_PARAM, budget_total, budget_comptage, poids_requetes_comptage, poids_requetes_moyenne_total, poids_requetes_quantile):
@@ -45,9 +97,9 @@ def update_context(CONTEXT_PARAM, budget_total, budget_comptage, poids_requetes_
 
 # Fonction pour forcer une variable à 0 en modifiant A et b
 def impose_zero(A, b, index):
-    A[index - 1, :] = 0
-    A[index - 1, index] = -1
-    b[index - 1] = 0
+    A[index, :] = 0
+    A[index, index] = -1
+    b[index] = 0
     return A, b
 
 
@@ -105,9 +157,9 @@ def sys_budget_dp(budget_rho, nb_modalite, poids):
     b[-1, 0] = budget_rho
 
     A = np.zeros((N + 1, N + 1))
-    A[:N, 0] = P.flatten()
-    A[:N, 1:] = Q
-    A[N, 1:] = 0.5
+    A[:N, N] = P.flatten()
+    A[:N, :N] = Q
+    A[N, :N] = 0.5
 
     x_sol = solve_projected(A.copy(), b.copy())
     print(x_sol)
@@ -116,23 +168,23 @@ def sys_budget_dp(budget_rho, nb_modalite, poids):
     poids_estimateur = {}
     if x_sol is not None:
         print(f"---------------------------------------------------------------------------------------------------")
-        print(f"ρ optimal = {x_sol[0].item():.3f}")
-        for i, ((nom, p), x) in enumerate(zip(poids.items(), x_sol[1:])):
+        print(f"ρ optimal = {x_sol[N].item():.3f} vs ρ budget = {budget_rho:.3f} (Gain net de {(x_sol[N].item()-budget_rho):.3f})")
+        for i, ((nom, p), x) in enumerate(zip(poids.items(), x_sol[:N])):
             if x.item() != 0:
-                var_estim = 1/(2*p*x_sol[0].item())
+                var_estim = 1/(2*p*x_sol[N].item())
                 variance_req[nom] = 1/x.item()
-                print(f"Variance de la requête pour {nom} = {1/x.item():.2f} et variance d'estimation = {var_estim:.2f}")
+                print(f"Ecart type de la requête pour {nom} = {np.sqrt(1/x.item()):.2f} et écart type de l'estimation = {np.sqrt(var_estim):.2f}")
             else:
-                var_estim = -1/np.dot(Q[i], x_sol[1:].flatten())
-                print(f"Pas de requête pour {nom} et de variance d'estimation = {var_estim:.2f}")
+                var_estim = -1/np.dot(Q[i], x_sol[:N].flatten())
+                print(f"Pas de requête pour {nom} et écart type de l'estimation = {np.sqrt(var_estim):.2f}")
 
             variance_atteinte[nom] = var_estim
             poids_estimateur[nom] = {}
-            for j, ((nom_2, _), x_2) in enumerate(zip(poids.items(), x_sol[1:])):
-                poids_estim = -var_estim * Q[i][j]*x_sol[1+j].item()
+            for j, ((nom_2, _), x_2) in enumerate(zip(poids.items(), x_sol[:N])):
+                poids_estim = -var_estim * Q[i][j]*x_sol[j].item()
                 if poids_estim > 0:
                     poids_estimateur[nom][nom_2] = poids_estim
-                    print(f"- Poids de l'estimation par {nom_2} = {poids_estim:.2f}")
+                    print(f"    - Poids de l'estimation par la requête {nom_2} = {poids_estim:.2f}")
     else:
         print("❌ Aucune solution admissible.")
     print(f"---------------------------------------------------------------------------------------------------")
@@ -152,11 +204,17 @@ def rho_from_eps_delta(epsilon, delta):
 
 
 def eps_from_rho_delta(rho, delta):
-    if rho < 0:
-        raise ValueError("rho must be positive")
+    if rho <= 0 or delta <= 0 or delta >= 1:
+        raise ValueError("rho must be positive and delta in (0, 1)")
 
     def equation(y, rho, delta):
-        return y - (rho + 2 * np.sqrt(rho * np.log(1 / (delta * (1 + (y - rho) / (2 * rho))))))
+        denom = delta * (1 + (y - rho) / (2 * rho))
+        if denom <= 0:
+            return np.inf  # force fsolve à éviter cette zone
+        if rho * np.log(1 / denom) <= 0:
+            return np.inf  # force fsolve à éviter cette zone
+        sqrt_term = np.sqrt(rho * np.log(1 / denom))
+        return y - (rho + 2 * sqrt_term)
 
     epsilon_base = rho + 2 * np.sqrt(rho * np.log(1 / delta))
     y0 = rho + 1

@@ -308,19 +308,32 @@ class quantile_dp(request_dp):
         return query
 
     def precision(self, data, epsilon):
-        scores, sensi = manual_quantile_score(data.collect()[self.variable].to_numpy(), self.candidats, alpha=self.list_alpha[0], et_si=True)
-        low_q, high_q = gumbel_r.ppf([0.005, 0.995], loc=0, scale=2 * sensi / epsilon)
+        # Calcul des scores et sensibilité
+        scores, sensi = manual_quantile_score(
+            data.collect()[self.variable].to_numpy(),
+            self.candidats,
+            alpha=self.list_alpha[0],
+            et_si=True
+        )
 
-        lower = scores + low_q
-        upper = scores + high_q
+        # Probabilités exponentielles
+        proba_non_norm = np.exp(-epsilon * scores / (2 * sensi))
+        proba = proba_non_norm / np.sum(proba_non_norm)
 
-        # Trouver l’indice du score minimal
-        min_idx = np.argmin(scores)
-        min_lower = lower[min_idx]
-        min_upper = upper[min_idx]
+        # Tri décroissant des probabilités
+        sorted_indices = np.argsort(proba)[::-1]
+        sorted_proba = np.array(proba)[sorted_indices]
+        sorted_candidats = np.array(self.candidats)[sorted_indices]
 
-        count = 0
-        for l, u in zip(lower, upper):
-            if not (u < min_lower or l > min_upper):
-                count += 1
-        return count
+        # Sélection des indices jusqu'à ce que la somme atteigne 95%
+        cumulative = np.cumsum(sorted_proba)
+        top95_mask = cumulative <= 0.95
+        if not np.all(top95_mask):  # Ajouter aussi l'élément qui dépasse 95%
+            top95_mask[np.argmax(cumulative > 0.95)] = True
+
+        candidats_top95 = sorted_candidats[top95_mask]
+
+        # Calcul de la différence maximale entre ces candidats
+        precision_val = np.max(candidats_top95) - np.min(candidats_top95)
+
+        return precision_val
