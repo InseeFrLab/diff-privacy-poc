@@ -47,7 +47,7 @@ dp.enable_features("contrib")
 
 www_dir = Path(__file__).parent / "www"
 
-data_example = sns.load_dataset("penguins")
+data_example = sns.load_dataset("penguins").dropna()
 
 
 # 1. UI --------------------------------------
@@ -192,7 +192,6 @@ def server(input, output, session):
 
         return results
 
-
     @reactive.Calc
     def X_quantile():
         if input.budget_total() == 0:
@@ -275,20 +274,45 @@ def server(input, output, session):
         df = pd.DataFrame(result)
         return create_barplot(df, x_col="requête", y_col="écart type", hoover="variable")
 
+    @output
+    @render.data_frame
+    def table_comptage():
+        result, _, _, _ = X_count()
+        df = pd.DataFrame(result)
+        return df
+
     @render_widget
     def plot_total():
         df = pd.DataFrame(X_total())
         return create_grouped_barplot_cv(df)
+
+    @output
+    @render.data_frame
+    def table_total():
+        df = pd.DataFrame(X_total())
+        return df
 
     @render_widget
     def plot_moyenne():
         df = pd.DataFrame(X_moyenne())
         return create_grouped_barplot_cv(df)
 
+    @output
+    @render.data_frame
+    def table_moyenne():
+        df = pd.DataFrame(X_moyenne())
+        return df
+
     @render_widget
     def plot_quantile():
         df = pd.DataFrame(X_quantile())
         return create_barplot(df, x_col="requête", y_col="candidats", hoover=None)
+
+    @output
+    @render.data_frame
+    def table_quantile():
+        df = pd.DataFrame(X_quantile())
+        return df
 
     # Page 1 ----------------------------------
 
@@ -773,3 +797,4 @@ def server(input, output, session):
 
 app = App(app_ui, server, static_assets=www_dir)
 # shiny run --reload shiny_app.py
+# shiny run --autoreload-port 8000 shiny_app.py

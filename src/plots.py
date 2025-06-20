@@ -1,7 +1,6 @@
 from src.fonctions import manual_quantile_score
 from scipy.stats import gumbel_r
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.graph_objects as go
@@ -10,6 +9,13 @@ import plotly.colors as pc
 
 def create_grouped_barplot_cv(df):
     fig = go.Figure()
+
+    fig.update_layout(
+        plot_bgcolor='white',
+        margin=dict(t=40, r=30, l=60, b=60),
+        xaxis=dict(showgrid=True, gridcolor='lightgray', linecolor='black', linewidth=1, mirror=True),
+        yaxis=dict(showgrid=True, gridcolor='lightgray', linecolor='black', linewidth=1, mirror=True),
+    )
 
     if df.empty:
         fig.add_trace(

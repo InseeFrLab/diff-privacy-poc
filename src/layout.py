@@ -507,9 +507,15 @@ def bloc_budget_comptage():
                 ui.card_header("Répartition du budget pour les comptages"),
                 ui.output_ui("radio_buttons_comptage"),
             ),
-            ui.card(
-                output_widget("plot_comptage"),
-                full_screen=True
+            ui.navset_card_underline(
+                ui.nav_panel("Plot", ui.card(
+                    output_widget("plot_comptage"),
+                    full_screen=True
+                )),
+                ui.nav_panel("Table", ui.card(
+                    ui.output_data_frame("table_comptage"),
+                    full_screen=True
+                ))
             ),
             col_widths=[4, 8]
         )
@@ -523,9 +529,15 @@ def bloc_budget_total():
                 ui.card_header("Répartition du budget pour les totaux"),
                 ui.output_ui("radio_buttons_total"),
             ),
-            ui.card(
-                output_widget("plot_total"),
-                full_screen=True
+            ui.navset_card_underline(
+                ui.nav_panel("Plot", ui.card(
+                    output_widget("plot_total"),
+                    full_screen=True
+                )),
+                ui.nav_panel("Table", ui.card(
+                    ui.output_data_frame("table_total"),
+                    full_screen=True
+                ))
             ),
             col_widths=[4, 8]
         )
@@ -539,9 +551,15 @@ def bloc_budget_moyenne():
                 ui.card_header("Répartition du budget pour les moyennes"),
                 ui.output_ui("radio_buttons_moyenne"),
             ),
-            ui.card(
-                output_widget("plot_moyenne"),
-                full_screen=True
+            ui.navset_card_underline(
+                ui.nav_panel("Plot", ui.card(
+                    output_widget("plot_moyenne"),
+                    full_screen=True
+                )),
+                ui.nav_panel("Table", ui.card(
+                    ui.output_data_frame("table_moyenne"),
+                    full_screen=True
+                ))
             ),
             col_widths=[4, 8]
         )
@@ -555,9 +573,15 @@ def bloc_budget_quantile():
                 ui.card_header("Répartition du budget pour les quantiles"),
                 ui.output_ui("radio_buttons_quantile"),
             ),
-            ui.card(
-                output_widget("plot_quantile"),
-                full_screen=True
+            ui.navset_card_underline(
+                ui.nav_panel("Plot", ui.card(
+                    output_widget("plot_quantile"),
+                    full_screen=True
+                )),
+                ui.nav_panel("Table", ui.card(
+                    ui.output_data_frame("table_quantile"),
+                    full_screen=True
+                ))
             ),
             col_widths=[4, 8]
         )
