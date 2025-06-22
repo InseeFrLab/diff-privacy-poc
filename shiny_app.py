@@ -100,7 +100,7 @@ def server(input, output, session):
         results = []
         for i, (key, request) in enumerate(lien_comptage_req.items()):
             scale = np.sqrt(variance_estimation[key])
-            results.append({"requête": request, "écart type": scale, "variable": key})
+            results.append({"requête": request, "variable": key, "écart type": scale})
         return results, variance_req_comptage, poids_estimateur, lien_comptage_req
 
     @reactive.Calc
@@ -119,10 +119,11 @@ def server(input, output, session):
 
             scale = max(abs(v_min), abs(v_max)) / np.sqrt(2 * input.budget_total() * poids)
             resultat = process_request(dataset().lazy(), request)
+            resultat_non_biaise = process_request(dataset().lazy(), request, use_bounds=False)
 
-            for row in resultat.iter_rows(named=True):
+            for row_biaise, row_non_biaise in zip(resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)):
                 # Extraction des modalités croisées
-                modalites = [str(v) for k, v in row.items() if k != "sum"]
+                modalites = [str(v) for k, v in row_biaise.items() if k != "sum"]
 
                 # Construction de l’étiquette
                 if not modalites:
@@ -131,12 +132,20 @@ def server(input, output, session):
                     label = f"{variable} ({', '.join(modalites)})"
 
                 # Calcul du CV
-                cv = 100 * scale / row["sum"] if row["sum"] != 0 else float("inf")
+                cv = 100 * scale / row_biaise["sum"] if row_biaise["sum"] != 0 else float("inf")
+
+                biais = row_biaise["sum"] - row_non_biaise["sum"]
+                biais_relatif = 100 * biais / row_non_biaise["sum"]
 
                 results.append({
                     "requête": key,
                     "label": label,
-                    "cv (%)": cv
+                    "variable": variable,
+                    "modalité": modalites,
+                    "cv (%)": cv,
+                    "biais relatif (%)": biais_relatif,
+                    "écart type": scale,
+                    'biais': biais
                 })
 
             results.sort(key=lambda x: x["cv (%)"])
@@ -162,30 +171,42 @@ def server(input, output, session):
             v_min, v_max = request["bounds"]
             variable = request.get("variable", "Variable")
 
-            scale_tot = max(abs(v_min), abs(v_max)) / np.sqrt(input.budget_total() * poids)
-            scale_len = 1 / np.sqrt(input.budget_total() * poids)
+            scale_tot = max(abs(v_min), abs(v_max)) / np.sqrt(input.budget_total() * poids /2)
+            scale_len = 1 / np.sqrt(input.budget_total() * poids /2)
 
             resultat = process_request(dataset().lazy(), request)
-
-            for row in resultat.iter_rows(named=True):
-                total = row.get("sum", 0)
-                count = row.get("count", 1)
+            resultat_non_biaise = process_request(dataset().lazy(), request, use_bounds=False)
+            for row_biaise, row_non_biaise in zip(resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)):
+                total = row_biaise.get("sum", 0)
+                total_non_biaise = row_non_biaise.get("sum", 0)
+                count = row_biaise.get("count", 1)
 
                 cv_total = scale_tot / total if total != 0 else float("inf")
                 cv_count = scale_len / count if count != 0 else float("inf")
                 cv = 100 * np.sqrt(cv_total**2 + cv_count**2)
 
-                modalites = [str(v) for k, v in row.items() if k not in ["sum", "count", "mean"]]
+                modalites = [str(v) for k, v in row_biaise.items() if k not in ["sum", "count", "mean"]]
 
                 if not modalites:
                     label = f"{variable}"
                 else:
                     label = f"{variable} ({', '.join(modalites)})"
 
+                biais = (total - total_non_biaise) / count
+                biais_relatif = 100 * biais / (total_non_biaise/count)
+
                 results.append({
                     "requête": key,
                     "label": label,
-                    "cv (%)": cv
+                    "variable": variable,
+                    "modalité": modalites,
+                    "cv (%)": cv,
+                    "biais relatif (%)": biais_relatif,
+                    "biais": biais,
+                    "cv total (%)": 100*cv_total,
+                    "écart type total": scale_tot,
+                    "cv comptage (%)": 100*cv_count,
+                    "écart type comptage": scale_len
                 })
 
             results.sort(key=lambda x: x["cv (%)"])
@@ -268,51 +289,52 @@ def server(input, output, session):
 
         return afficher_resultats(resultats_df, requetes(), poids_estimateur, lien_comptage_req)
 
+    @output
+    @render.data_frame
+    def table_comptage():
+        result, _, _, _ = X_count()
+        df = pd.DataFrame(result).round(1)
+        return df
+
+    @output
+    @render.data_frame
+    def table_total():
+        df = pd.DataFrame(X_total()).drop(columns="label").round(1)
+        return df
+
+    @output
+    @render.data_frame
+    def table_moyenne():
+        df = pd.DataFrame(X_moyenne()).drop(columns="label").round(1)
+        return df
+
+    @output
+    @render.data_frame
+    def table_quantile():
+        df = pd.DataFrame(X_quantile()).round(1)
+        return df
+
     @render_widget
     def plot_comptage():
         result, _, _, _ = X_count()
         df = pd.DataFrame(result)
         return create_barplot(df, x_col="requête", y_col="écart type", hoover="variable")
 
-    @output
-    @render.data_frame
-    def table_comptage():
-        result, _, _, _ = X_count()
-        df = pd.DataFrame(result)
-        return df
-
     @render_widget
     def plot_total():
         df = pd.DataFrame(X_total())
         return create_grouped_barplot_cv(df)
-
-    @output
-    @render.data_frame
-    def table_total():
-        df = pd.DataFrame(X_total())
-        return df
 
     @render_widget
     def plot_moyenne():
         df = pd.DataFrame(X_moyenne())
         return create_grouped_barplot_cv(df)
 
-    @output
-    @render.data_frame
-    def table_moyenne():
-        df = pd.DataFrame(X_moyenne())
-        return df
-
     @render_widget
     def plot_quantile():
         df = pd.DataFrame(X_quantile())
         return create_barplot(df, x_col="requête", y_col="candidats", hoover=None)
 
-    @output
-    @render.data_frame
-    def table_quantile():
-        df = pd.DataFrame(X_quantile())
-        return df
 
     # Page 1 ----------------------------------
 

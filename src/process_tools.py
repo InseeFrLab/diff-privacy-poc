@@ -80,7 +80,7 @@ def process_request_dp(context_comptage, context_moyenne_total, context_quantile
     return mapping[type_req]()
 
 
-def process_request(df: pl.LazyFrame, req: dict) -> pl.LazyFrame:
+def process_request(df: pl.LazyFrame, req: dict, use_bounds=True) -> pl.LazyFrame:
 
     variable = req.get("variable")
     by = req.get("by")
@@ -93,7 +93,7 @@ def process_request(df: pl.LazyFrame, req: dict) -> pl.LazyFrame:
         df = df.filter(parse_filter_string(filtre))
 
     # Appliquer les bornes si variable et bounds sont présents
-    if variable and bounds:
+    if variable and bounds and use_bounds:
         L, U = bounds
         df = df.filter((pl.col(variable) >= L) & (pl.col(variable) <= U))
 
@@ -140,5 +140,8 @@ def process_request(df: pl.LazyFrame, req: dict) -> pl.LazyFrame:
 
     else:
         raise ValueError(f"Type de requête inconnu : {type_req}")
+
+    if by:
+        df = df.sort(by=by)
 
     return df.collect()

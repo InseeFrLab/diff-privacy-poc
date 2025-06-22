@@ -98,7 +98,7 @@ def affichage_requete(requetes, dataset):
 
     for key, req in requetes.items():
         # Colonne de gauche : paramètres
-        resultat = process_request(df, req)
+        resultat = process_request(df, req, use_bounds=False)
 
         if req.get("by") is not None:
             resultat = resultat.sort(by=req.get("by"))
@@ -388,6 +388,7 @@ def page_preparer_requetes():
 def sidebar_requetes():
     return ui.sidebar(
         ui.input_file("request_input", "📂 Importer un fichier JSON", accept=[".json"]),
+        ui.br(),
         ui.download_button("download_json", "💾 Télécharger les requêtes (JSON)", class_="btn-outline-primary"),
         position="right",
         bg="#f8f8f8"
