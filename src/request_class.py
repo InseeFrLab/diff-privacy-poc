@@ -3,7 +3,6 @@ from src.fonctions import (
 )
 
 from abc import ABC, abstractmethod
-from scipy.stats import gumbel_r
 import polars as pl
 import numpy as np
 

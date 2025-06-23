@@ -5,7 +5,7 @@ from src.process_tools import (
     process_request
 )
 from src.fonctions import (
-    ameliorer_comptage
+    ameliorer_comptage, ameliorer_total
 )
 from shiny import ui
 from shinywidgets import output_widget
@@ -14,16 +14,20 @@ from shinywidgets import output_widget
 # Fonctions pour du layout ----------------------------------
 
 
-def afficher_resultats(results_store, requetes, poids_estimateur, lien_comptage_req):
+def afficher_resultats(results_store, requetes, poids_estimateur, poids_estimateur_tot, lien_comptage_req, lien_total_req_dict):
     current_results = results_store()
     panels = []
     final_results = {}
     for key, req in requetes.items():
         df_result = current_results[key]
+        print(df_result)
 
         # 👉 Ici tu peux effectuer un traitement global sur plusieurs df si nécessaire
         if req.get("type") == "Comptage":
             df_result = ameliorer_comptage(key, df_result, poids_estimateur, results_store(), lien_comptage_req)
+
+        if req.get("type") == "Total":
+            df_result = ameliorer_total(key, req, df_result, poids_estimateur_tot, results_store(), lien_total_req_dict)
 
         final_results[key] = df_result
 

@@ -10,6 +10,59 @@ from src.constant import (
 )
 
 
+def ameliorer_total(key, req, df_result, poids_estimateur_tot, results_store, lien_total_req_dict):
+
+    variable = req["variable"]
+    vars_key = next((k for k, v in lien_total_req_dict[variable].items() if v == key), None)
+    poids_dict = poids_estimateur_tot[variable][vars_key]
+    df_result_base = df_result.copy() if df_result is not None else None
+    vars_key_list = [vars_key] if isinstance(vars_key, str) else list(vars_key)
+    if df_result_base is not None:
+        df_result_base['sum_amelioree'] = 0.0
+
+    for ref_key, poids in poids_dict.items():
+        if poids == 0:
+            continue
+
+        df_ref = results_store.get(lien_total_req_dict[variable][ref_key])
+        df_ref = df_ref.copy()
+
+        if ref_key == vars_key:
+            df_result_base['sum_amelioree'] += poids * df_result_base['sum']
+
+        else:
+            group_vars = [ref_key] if isinstance(ref_key, str) else list(ref_key)
+            common_vars = list(set(group_vars) & set(vars_key_list))
+
+            if not common_vars:
+                total_ref = df_ref["sum"].sum()
+                if df_result_base is None:
+                    # Créer un DataFrame d'une seule ligne
+                    df_result_base = pd.DataFrame([{'sum_amelioree': poids * total_ref}])
+                else:
+                    df_result_base['sum_amelioree'] += poids * total_ref
+            else:
+                df_proj = (
+                    df_ref
+                    .groupby(common_vars, as_index=False)
+                    .agg({'sum': 'sum'})
+                    .rename(columns={'sum': 'sum_ref'})
+                )
+
+                if df_result_base is None:
+                    df_result_base = df_proj.copy()
+                    df_result_base['sum_amelioree'] = poids * df_result_base['sum_ref']
+                    df_result_base = df_result_base.drop(columns=['sum_ref'])
+                else:
+                    merged = df_result_base.merge(df_proj, on=common_vars, how='left')
+                    df_result_base['sum_amelioree'] += poids * merged['sum_ref']
+
+    # ✅ Remplacer la colonne sum
+    df_result_base['sum'] = df_result_base['sum_amelioree'].round(0).clip(lower=0).astype(int)
+    df_result_base = df_result_base.drop(columns=['sum_amelioree'])
+    return df_result_base
+
+
 def ameliorer_comptage(key, df_result, poids_estimateur, results_store, lien_comptage_req):
     vars_key = next((k for k, v in lien_comptage_req.items() if v == key), None)
     poids_dict = poids_estimateur[vars_key]
@@ -61,10 +114,10 @@ def ameliorer_comptage(key, df_result, poids_estimateur, results_store, lien_com
     return df_result_base
 
 
-def update_context(CONTEXT_PARAM, budget_total, budget_comptage, poids_requetes_comptage, poids_requetes_moyenne_total, poids_requetes_quantile):
+def update_context(CONTEXT_PARAM, budget, budget_comptage, budget_totaux, poids_requetes_comptage, poids_requetes_total, poids_requetes_moyenne, poids_requetes_quantile):
 
-    budget_moyenne_total = budget_total * sum(poids_requetes_moyenne_total)
-    budget_quantile = np.sqrt(8 * budget_total * sum(poids_requetes_quantile))
+    budget_moyenne = budget * sum(poids_requetes_moyenne)
+    budget_quantile = np.sqrt(8 * budget * sum(poids_requetes_quantile))
 
     if budget_comptage == 0:
         context_comptage = None
@@ -75,13 +128,22 @@ def update_context(CONTEXT_PARAM, budget_total, budget_comptage, poids_requetes_
             split_by_weights=poids_requetes_comptage
         )
 
-    if budget_moyenne_total == 0:
-        context_moyenne_total = None
+    if budget_totaux == 0:
+        context_total = None
     else:
-        context_moyenne_total = dp.Context.compositor(
+        context_total = dp.Context.compositor(
             **CONTEXT_PARAM,
-            privacy_loss=dp.loss_of(rho=budget_moyenne_total),
-            split_by_weights=poids_requetes_moyenne_total
+            privacy_loss=dp.loss_of(rho=budget_totaux),
+            split_by_weights=poids_requetes_total
+        )
+
+    if budget_moyenne == 0:
+        context_moyenne = None
+    else:
+        context_moyenne = dp.Context.compositor(
+            **CONTEXT_PARAM,
+            privacy_loss=dp.loss_of(rho=budget_moyenne),
+            split_by_weights=poids_requetes_moyenne
         )
     if budget_quantile == 0:
         context_quantile = None
@@ -92,13 +154,13 @@ def update_context(CONTEXT_PARAM, budget_total, budget_comptage, poids_requetes_
             split_by_weights=poids_requetes_quantile
         )
 
-    return context_comptage, context_moyenne_total, context_quantile
+    return context_comptage, context_total, context_moyenne, context_quantile
 
 
 # Fonction pour forcer une variable à 0 en modifiant A et b
 def impose_zero(A, b, index):
     A[index, :] = 0
-    A[index, index] = -1
+    A[index, index] = 1
     b[index] = 0
     return A, b
 
@@ -141,17 +203,17 @@ def sys_budget_dp(budget_rho, nb_modalite, poids):
     for i, Ei in enumerate(subsets):
         for j, Ej in enumerate(subsets):
             if Ei == Ej:
-                Q[i, j] = -1
+                Q[i, j] = 1
             elif Ei.issubset(Ej):
                 diff = Ej - Ei
                 prod = 1
                 for k in diff:
                     prod *= nb_modalite[k]
-                Q[i, j] = -1 / prod
+                Q[i, j] = 1 / prod
 
     P = np.zeros((N, 1))
     for i, subset in enumerate(subsets):
-        P[i, 0] = 2 * poids_set.get(frozenset(subset), 0)
+        P[i, 0] = - poids_set.get(frozenset(subset), 0)
 
     b = np.zeros((N + 1, 1))
     b[-1, 0] = budget_rho
@@ -159,36 +221,34 @@ def sys_budget_dp(budget_rho, nb_modalite, poids):
     A = np.zeros((N + 1, N + 1))
     A[:N, N] = P.flatten()
     A[:N, :N] = Q
-    A[N, :N] = 0.5
+    A[N, :N] = 1
 
     x_sol = solve_projected(A.copy(), b.copy())
-    print(x_sol)
-    variance_req = {}
-    variance_atteinte = {}
+    rho_req = {}
+    rho_atteint = {}
     poids_estimateur = {}
     if x_sol is not None:
-        print(f"---------------------------------------------------------------------------------------------------")
         print(f"ρ optimal = {x_sol[N].item():.3f} vs ρ budget = {budget_rho:.3f} (Gain net de {(x_sol[N].item()-budget_rho):.3f})")
         for i, ((nom, p), x) in enumerate(zip(poids.items(), x_sol[:N])):
             if x.item() != 0:
                 var_estim = 1/(2*p*x_sol[N].item())
-                variance_req[nom] = 1/x.item()
-                print(f"Ecart type de la requête pour {nom} = {np.sqrt(1/x.item()):.2f} et écart type de l'estimation = {np.sqrt(var_estim):.2f}")
+                rho_req[nom] = x.item()
+                print(f"Ecart type de la requête pour {nom} = {np.sqrt(1/(2*x.item())):.2f}Δ et écart type de l'estimation = {np.sqrt(var_estim):.2f}Δ")
             else:
-                var_estim = -1/np.dot(Q[i], x_sol[:N].flatten())
-                print(f"Pas de requête pour {nom} et écart type de l'estimation = {np.sqrt(var_estim):.2f}")
+                var_estim = 1/(2*np.dot(Q[i], x_sol[:N].flatten()))
+                print(f"Pas de requête pour {nom} et écart type de l'estimation = {np.sqrt(var_estim):.2f}Δ")
 
-            variance_atteinte[nom] = var_estim
+            rho_atteint[nom] = 1/(2*var_estim)
             poids_estimateur[nom] = {}
             for j, ((nom_2, _), x_2) in enumerate(zip(poids.items(), x_sol[:N])):
-                poids_estim = -var_estim * Q[i][j]*x_sol[j].item()
+                poids_estim = var_estim * Q[i][j] * 2 * x_sol[j].item()
                 if poids_estim > 0:
                     poids_estimateur[nom][nom_2] = poids_estim
                     print(f"    - Poids de l'estimation par la requête {nom_2} = {poids_estim:.2f}")
     else:
         print("❌ Aucune solution admissible.")
     print(f"---------------------------------------------------------------------------------------------------")
-    return variance_atteinte, variance_req, poids_estimateur
+    return rho_atteint, rho_req, poids_estimateur
 
 
 def rho_from_eps_delta(epsilon, delta):

@@ -94,14 +94,18 @@ def server(input, output, session):
         poids_comptage_req = {k: v for k, v in poids.items() if k in req_comptage.keys()}
         budget_comptage = input.budget_total() * sum(poids_comptage_req.values())
         poids_comptage, lien_comptage_req = organiser_par_by(req_comptage, poids)
-        variance_estimation, variance_req, poids_estimateur = sys_budget_dp(budget_rho=budget_comptage, nb_modalite=nb_modalite, poids=poids_comptage)
 
-        variance_req_comptage = {lien_comptage_req[k]: v for k, v in variance_req.items() if k in lien_comptage_req}
+        print(f"---------------------------------------------------------------------------------------------------")
+        print(f"Cas du comptage")
+        rho_estimation, rho_req, poids_estimateur = sys_budget_dp(budget_rho=budget_comptage, nb_modalite=nb_modalite, poids=poids_comptage)
+
+        rho_req_comptage = {lien_comptage_req[k]: rho for k, rho in rho_req.items() if k in lien_comptage_req}
         results = []
         for i, (key, request) in enumerate(lien_comptage_req.items()):
-            scale = np.sqrt(variance_estimation[key])
+            scale = 1/np.sqrt(2*rho_estimation[key])
             results.append({"requête": request, "variable": key, "écart type": scale})
-        return results, variance_req_comptage, poids_estimateur, lien_comptage_req
+
+        return results, rho_req_comptage, poids_estimateur, lien_comptage_req
 
     @reactive.Calc
     def X_total():
@@ -109,48 +113,74 @@ def server(input, output, session):
             return None
         data_requetes = requetes()
         weights = normalized_weights()
-        results = []
-
+        nb_modalite = {k: len(v) for k, v in key_values().items()}
         req_total = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["total", "sum", "somme"]}
-        for key, request in req_total.items():
-            poids = weights[key]
-            v_min, v_max = request["bounds"]
-            variable = request.get("variable", "Variable")
 
-            scale = max(abs(v_min), abs(v_max)) / np.sqrt(2 * input.budget_total() * poids)
-            resultat = process_request(dataset().lazy(), request)
-            resultat_non_biaise = process_request(dataset().lazy(), request, use_bounds=False)
+        results = []
+        rho_req_total = {}
+        poids_estimateur_dict = {}
+        lien_total_req_dict = {}
 
-            for row_biaise, row_non_biaise in zip(resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)):
-                # Extraction des modalités croisées
-                modalites = [str(v) for k, v in row_biaise.items() if k != "sum"]
+        # Récupération des variables distinctes
+        variables_uniques = set(v["variable"] for v in req_total.values())
 
-                # Construction de l’étiquette
-                if not modalites:
-                    label = f"{variable}"
-                else:
-                    label = f"{variable} ({', '.join(modalites)})"
+        # Boucle sur chaque variable unique
+        for variable in variables_uniques:
+            # Sous-ensemble des requêtes ayant cette variable
+            req_variable = {
+                k: v for k, v in req_total.items()
+                if v["variable"] == variable
+            }
 
-                # Calcul du CV
-                cv = 100 * scale / row_biaise["sum"] if row_biaise["sum"] != 0 else float("inf")
+            poids_total_variable = {k: v for k, v in weights.items() if k in req_variable.keys()}
+            budget_total_variable = input.budget_total() * sum(poids_total_variable.values())
+            poids_total, lien_total_req = organiser_par_by(req_variable, weights)
 
-                biais = row_biaise["sum"] - row_non_biaise["sum"]
-                biais_relatif = 100 * biais / row_non_biaise["sum"]
+            print(f"---------------------------------------------------------------------------------------------------")
+            print(f"Cas du total de la variable {variable}")
 
-                results.append({
-                    "requête": key,
-                    "label": label,
-                    "variable": variable,
-                    "modalité": modalites,
-                    "cv (%)": cv,
-                    "biais relatif (%)": biais_relatif,
-                    "écart type": scale,
-                    'biais': biais
-                })
+            rho_estimation, rho_req, poids_estimateur = sys_budget_dp(budget_rho=budget_total_variable, nb_modalite=nb_modalite, poids=poids_total)
 
-            results.sort(key=lambda x: x["cv (%)"])
+            rho_req_total[variable] = {lien_total_req[k]: rho for k, rho in rho_req.items() if k in lien_total_req}
+            poids_estimateur_dict[variable] = poids_estimateur
+            lien_total_req_dict[variable] = lien_total_req
 
-        return results
+            for i, (key_tot, key) in enumerate(lien_total_req.items()):
+                request = req_variable[key]
+                L, U = request["bounds"]
+                scale = max(abs(U), abs(L))/np.sqrt(2*rho_estimation[key_tot])
+
+                resultat = process_request(dataset().lazy(), request)
+                resultat_non_biaise = process_request(dataset().lazy(), request, use_bounds=False)
+
+                for row_biaise, row_non_biaise in zip(resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)):
+                    # Extraction des modalités croisées
+                    modalites = [str(v) for k, v in row_biaise.items() if k != "sum"]
+
+                    # Construction de l’étiquette
+                    if not modalites:
+                        label = f"{variable}"
+                    else:
+                        label = f"{variable} ({', '.join(modalites)})"
+
+                    # Calcul du CV
+                    cv = 100 * scale / row_biaise["sum"] if row_biaise["sum"] != 0 else float("inf")
+
+                    biais = row_biaise["sum"] - row_non_biaise["sum"]
+                    biais_relatif = 100 * biais / row_non_biaise["sum"]
+
+                    results.append({
+                        "requête": key,
+                        "label": label,
+                        "variable": variable,
+                        "modalité": modalites,
+                        "cv (%)": cv,
+                        "biais relatif (%)": biais_relatif,
+                        "écart type": scale,
+                        'biais': biais
+                    })
+
+        return results, rho_req_total, poids_estimateur_dict, lien_total_req_dict
 
     @reactive.Calc
     def X_moyenne():
@@ -230,9 +260,9 @@ def server(input, output, session):
                 "margins": [dp.polars.Margin(max_partition_length=10000)],
             }
 
-            context_comptage, context_moy_tot, context_quantile = update_context(context_param, input.budget_total(), 0, [], [], [1])
+            context_comptage, context_tot, context_moy, context_quantile = update_context(context_param, input.budget_total(), 0, 0, [], [], [], [1])
 
-            resultat_dp = process_request_dp(context_comptage, context_moy_tot, context_quantile, key_values(), request)
+            resultat_dp = process_request_dp(context_comptage, context_tot, context_moy, context_quantile, key_values(), request)
             intervalle_candidats = resultat_dp.precision(
                 data=dataset().lazy(),
                 epsilon=np.sqrt(8 * input.budget_total() * poids)
@@ -248,9 +278,20 @@ def server(input, output, session):
         data_requetes = requetes()
         weights = normalized_weights()
 
-        _, variance_req_comptage, poids_estimateur, lien_comptage_req = X_count()
+        _, rho_req_comptage, poids_estimateur, lien_comptage_req = X_count()
 
-        poids_variance_req_comptage = [variance for variance in variance_req_comptage.values()]
+        poids_rho_req_comptage = [rho for rho in rho_req_comptage.values()]
+
+        _, rho_req_total_dict, poids_estimateur_dict, lien_total_req_dict = X_total()
+
+        flat_dict = {}
+        for subdict in rho_req_total_dict.values():
+            flat_dict.update(subdict)
+
+        # Trier par ordre des clés 'req_N' selon le numéro
+        poids_rho_req_total = [
+            flat_dict[k] for k in sorted(flat_dict, key=lambda x: int(x.split("_")[1]))
+        ]
 
         poids_requetes_comptage = [
             weights[clef]
@@ -258,10 +299,16 @@ def server(input, output, session):
             if requete["type"].lower() in ["count", "comptage"]
         ]
 
-        poids_requetes_moyenne_total = [
+        poids_requetes_total = [
             weights[clef]
             for clef, requete in data_requetes.items()
-            if requete["type"].lower() != "quantile" and requete["type"].lower() not in ["count", "comptage"]
+            if requete["type"].lower() in ["total", "somme", "sum"]
+        ]
+
+        poids_requetes_moyenne = [
+            weights[clef]
+            for clef, requete in data_requetes.items()
+            if requete["type"].lower() in ["moyenne", "mean"]
         ]
 
         poids_requetes_quantile = [
@@ -278,16 +325,18 @@ def server(input, output, session):
 
         budget_comptage = sum(poids_requetes_comptage) * input.budget_total()
 
-        context_comptage, context_moy_tot, context_quantile = update_context(
-            context_param, input.budget_total(), budget_comptage, poids_variance_req_comptage, poids_requetes_moyenne_total, poids_requetes_quantile
+        budget_totaux = sum(poids_requetes_total) * input.budget_total()
+
+        context_comptage, context_tot, context_moy, context_quantile = update_context(
+            context_param, input.budget_total(), budget_comptage, budget_totaux, poids_rho_req_comptage, poids_rho_req_total, poids_requetes_moyenne, poids_requetes_quantile
         )
 
         # --- Barre de progression ---
         with ui.Progress(min=0, max=len(data_requetes)) as p:
             p.set(0, message="Traitement en cours...", detail="Analyse requête par requête...")
-            await calculer_toutes_les_requetes(context_comptage, context_moy_tot, context_quantile, key_values(), data_requetes, p, resultats_df, dataset(), variance_req_comptage)
+            await calculer_toutes_les_requetes(context_comptage, context_tot, context_moy, context_quantile, key_values(), data_requetes, p, resultats_df, dataset(), rho_req_comptage, rho_req_total_dict)
 
-        return afficher_resultats(resultats_df, requetes(), poids_estimateur, lien_comptage_req)
+        return afficher_resultats(resultats_df, requetes(), poids_estimateur, poids_estimateur_dict, lien_comptage_req, lien_total_req_dict)
 
     @output
     @render.data_frame
@@ -299,13 +348,14 @@ def server(input, output, session):
     @output
     @render.data_frame
     def table_total():
-        df = pd.DataFrame(X_total()).drop(columns="label").round(1)
+        result, _, _, _ = X_total()
+        df = pd.DataFrame(result).drop(columns="label").round(0)
         return df
 
     @output
     @render.data_frame
     def table_moyenne():
-        df = pd.DataFrame(X_moyenne()).drop(columns="label").round(1)
+        df = pd.DataFrame(X_moyenne()).drop(columns="label").round(0)
         return df
 
     @output
@@ -322,7 +372,8 @@ def server(input, output, session):
 
     @render_widget
     def plot_total():
-        df = pd.DataFrame(X_total())
+        result, _, _, _ = X_total()
+        df = pd.DataFrame(result)
         return create_grouped_barplot_cv(df)
 
     @render_widget
