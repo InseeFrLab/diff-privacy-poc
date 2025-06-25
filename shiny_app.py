@@ -7,7 +7,7 @@ from src.plots import (
 from src.layout import (
     page_donnees,
     page_preparer_requetes,
-    page_mecanisme_dp,
+    page_introduction_dp,
     page_conception_budget,
     page_resultat_dp,
     page_etat_budget_dataset,
@@ -53,20 +53,19 @@ data_example = sns.load_dataset("penguins").dropna()
 # 1. UI --------------------------------------
 app_ui = ui.page_navbar(
     ui.nav_spacer(),
+    page_introduction_dp(),
     page_donnees(),
-    page_mecanisme_dp(),
     page_preparer_requetes(),
     page_conception_budget(),
     page_resultat_dp(),
     page_etat_budget_dataset(),
     title=ui.div(
         ui.img(src="insee-logo.png", height="80px", style="margin-right:10px"),
-        ui.img(src="Logo_poc.png", height="80px", style="margin-right:10px"),
+        ui.img(src="Logo_poc.png", height="60px", style="margin-right:10px"),
         style="display: flex; align-items: center; gap: 10px;"
     ),
     id="page",
 )
-
 
 # 2. Server ----------------------------------
 
@@ -275,65 +274,64 @@ def server(input, output, session):
     @render.ui
     @reactive.event(input.confirm_validation)
     async def req_dp_display():
-        data_requetes = requetes()
-        weights = normalized_weights()
-
-        _, rho_req_comptage, poids_estimateur, lien_comptage_req = X_count()
-
-        poids_rho_req_comptage = [rho for rho in rho_req_comptage.values()]
-
-        _, rho_req_total_dict, poids_estimateur_dict, lien_total_req_dict = X_total()
-
-        flat_dict = {}
-        for subdict in rho_req_total_dict.values():
-            flat_dict.update(subdict)
-
-        # Trier par ordre des clés 'req_N' selon le numéro
-        poids_rho_req_total = [
-            flat_dict[k] for k in sorted(flat_dict, key=lambda x: int(x.split("_")[1]))
-        ]
-
-        poids_requetes_comptage = [
-            weights[clef]
-            for clef, requete in data_requetes.items()
-            if requete["type"].lower() in ["count", "comptage"]
-        ]
-
-        poids_requetes_total = [
-            weights[clef]
-            for clef, requete in data_requetes.items()
-            if requete["type"].lower() in ["total", "somme", "sum"]
-        ]
-
-        poids_requetes_moyenne = [
-            weights[clef]
-            for clef, requete in data_requetes.items()
-            if requete["type"].lower() in ["moyenne", "mean"]
-        ]
-
-        poids_requetes_quantile = [
-            weights[clef]
-            for clef, requete in data_requetes.items()
-            if requete["type"].lower() == "quantile"
-        ]
-
-        context_param = {
-            "data": dataset().lazy(),
-            "privacy_unit": dp.unit_of(contributions=1),
-            "margins": [dp.polars.Margin(max_partition_length=70_000_000)],
-        }
-
-        budget_comptage = sum(poids_requetes_comptage) * input.budget_total()
-
-        budget_totaux = sum(poids_requetes_total) * input.budget_total()
-
-        context_comptage, context_tot, context_moy, context_quantile = update_context(
-            context_param, input.budget_total(), budget_comptage, budget_totaux, poids_rho_req_comptage, poids_rho_req_total, poids_requetes_moyenne, poids_requetes_quantile
-        )
-
         # --- Barre de progression ---
+        data_requetes = requetes()
         with ui.Progress(min=0, max=len(data_requetes)) as p:
             p.set(0, message="Traitement en cours...", detail="Analyse requête par requête...")
+            weights = normalized_weights()
+
+            _, rho_req_comptage, poids_estimateur, lien_comptage_req = X_count()
+
+            poids_rho_req_comptage = [rho for rho in rho_req_comptage.values()]
+
+            _, rho_req_total_dict, poids_estimateur_dict, lien_total_req_dict = X_total()
+
+            flat_dict = {}
+            for subdict in rho_req_total_dict.values():
+                flat_dict.update(subdict)
+
+            # Trier par ordre des clés 'req_N' selon le numéro
+            poids_rho_req_total = [
+                flat_dict[k] for k in sorted(flat_dict, key=lambda x: int(x.split("_")[1]))
+            ]
+
+            poids_requetes_comptage = [
+                weights[clef]
+                for clef, requete in data_requetes.items()
+                if requete["type"].lower() in ["count", "comptage"]
+            ]
+
+            poids_requetes_total = [
+                weights[clef]
+                for clef, requete in data_requetes.items()
+                if requete["type"].lower() in ["total", "somme", "sum"]
+            ]
+
+            poids_requetes_moyenne = [
+                weights[clef]
+                for clef, requete in data_requetes.items()
+                if requete["type"].lower() in ["moyenne", "mean"]
+            ]
+
+            poids_requetes_quantile = [
+                weights[clef]
+                for clef, requete in data_requetes.items()
+                if requete["type"].lower() == "quantile"
+            ]
+
+            context_param = {
+                "data": dataset().lazy(),
+                "privacy_unit": dp.unit_of(contributions=1),
+                "margins": [dp.polars.Margin(max_partition_length=70_000_000)],
+            }
+
+            budget_comptage = sum(poids_requetes_comptage) * input.budget_total()
+
+            budget_totaux = sum(poids_requetes_total) * input.budget_total()
+
+            context_comptage, context_tot, context_moy, context_quantile = update_context(
+                context_param, input.budget_total(), budget_comptage, budget_totaux, poids_rho_req_comptage, poids_rho_req_total, poids_requetes_moyenne, poids_requetes_quantile
+            )
             await calculer_toutes_les_requetes(context_comptage, context_tot, context_moy, context_quantile, key_values(), data_requetes, p, resultats_df, dataset(), rho_req_comptage, rho_req_total_dict)
 
         return afficher_resultats(resultats_df, requetes(), poids_estimateur, poids_estimateur_dict, lien_comptage_req, lien_total_req_dict)
@@ -452,6 +450,8 @@ def server(input, output, session):
     def key_values():
         df = dataset()
 
+        df = df.select([col for col in df.columns if "id" not in col.lower()])
+
         # Détecter les colonnes qualitatives (str ou catégorie)
         qualitatif_cols = [
             col for col, dtype in zip(df.columns, df.dtypes)
@@ -466,9 +466,12 @@ def server(input, output, session):
 
     @reactive.Effect
     def update_variable_choices():
-        # Met à jour dynamiquement les choix de la selectize input
-        ui.update_selectize("variable", choices=variable_choices())
-        ui.update_selectize("group_by", choices=variable_choices())
+        if input.type_req() == "Comptage":
+            ui.update_selectize("variable", choices={})  # pas de choix possible
+        else:
+            # Met à jour dynamiquement les choix de la selectize input
+            ui.update_selectize("variable", choices=variable_choices())
+            ui.update_selectize("group_by", choices=variable_choices())
 
     # Lecture du json contenant les requêtes
     @reactive.effect
@@ -598,6 +601,12 @@ def server(input, output, session):
         if not data_requetes:
             return ui.p("Aucune requête chargée.")
         return affichage_requete(data_requetes, dataset())
+
+    @reactive.effect
+    def disable_variable_if_comptage():
+        # Crée un message JS pour désactiver ou activer l'élément
+        is_comptage = input.type_req() == "Comptage"
+        session.send_input_message("variable", {"disabled": is_comptage})
 
     # Page 3 ----------------------------------
 
@@ -871,3 +880,5 @@ def server(input, output, session):
 app = App(app_ui, server, static_assets=www_dir)
 # shiny run --reload shiny_app.py
 # shiny run --autoreload-port 8000 shiny_app.py
+
+# shiny run --port 5000 --host 0.0.0.0 shiny_app.py

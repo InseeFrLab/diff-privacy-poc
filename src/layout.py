@@ -20,7 +20,6 @@ def afficher_resultats(results_store, requetes, poids_estimateur, poids_estimate
     final_results = {}
     for key, req in requetes.items():
         df_result = current_results[key]
-        print(df_result)
 
         # 👉 Ici tu peux effectuer un traitement global sur plusieurs df si nécessaire
         if req.get("type") == "Comptage":
@@ -228,9 +227,9 @@ def layout_donnees():
 
 # Page Mécanisme DP ----------------------------------
 
-def page_mecanisme_dp():
+def page_introduction_dp():
     return ui.nav_panel(
-        "Mécanisme DP",
+        "Introduction DP",
         bloc_bruit_gaussien(),
         ui.hr(),
         bloc_score_quantile()
@@ -365,7 +364,7 @@ def bloc_score_quantile():
                         output_widget("proba_plot"),
                         full_screen=True,
                     ),
-                    col_widths=[2, 6, 4]
+                    col_widths=[3, 5, 4]
                 )
             ),
             style="display: flex; flex-direction: column; gap: 40px;"

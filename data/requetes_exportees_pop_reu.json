@@ -1,0 +1,78 @@
+{
+  "req_1": {
+    "type": "Comptage"
+  },
+  "req_2": {
+    "type": "Comptage",
+    "by": [
+      "AGE_CAT",
+      "STATUT"
+    ]
+  },
+  "req_3": {
+    "type": "Comptage",
+    "by": [
+      "AGE_CAT"
+    ]
+  },
+  "req_4": {
+    "type": "Comptage",
+    "by": [
+      "STATUT"
+    ]
+  },
+  "req_5": {
+    "type": "Comptage",
+    "by": [
+      "AGE_CAT",
+      "MONOPARENT",
+      "STATUT"
+    ]
+  },
+  "req_6": {
+    "type": "Total",
+    "variable": "HOUSEHOLD_SIZE",
+    "bounds": [
+      1.0,
+      10.0
+    ]
+  },
+  "req_7": {
+    "type": "Total",
+    "variable": "NIVEAU_VIE",
+    "bounds": [
+      0.0,
+      300000.0
+    ]
+  },
+  "req_8": {
+    "type": "Total",
+    "variable": "NIVEAU_VIE",
+    "bounds": [
+      0.0,
+      300000.0
+    ],
+    "by": [
+      "AGE_CAT"
+    ]
+  },
+  "req_9": {
+    "type": "Moyenne",
+    "variable": "NIVEAU_VIE",
+    "bounds": [
+      0.0,
+      300000.0
+    ]
+  },
+  "req_10": {
+    "type": "Moyenne",
+    "variable": "NIVEAU_VIE",
+    "bounds": [
+      0.0,
+      300000.0
+    ],
+    "by": [
+      "AGE_CAT"
+    ]
+  }
+}
