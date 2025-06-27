@@ -19,7 +19,7 @@ from src.process_tools import (
     process_request, process_request_dp, calculer_toutes_les_requetes
 )
 from src.fonctions import (
-    eps_from_rho_delta,
+    eps_from_rho_delta, optimization_boosted,
     sys_budget_dp, update_context,
     normalize_weights,
     organiser_par_by, load_data
@@ -97,11 +97,12 @@ def server(input, output, session):
         print(f"---------------------------------------------------------------------------------------------------")
         print(f"Cas du comptage")
         rho_estimation, rho_req, poids_estimateur = sys_budget_dp(budget_rho=budget_comptage, nb_modalite=nb_modalite, poids=poids_comptage)
+        var_atteint = optimization_boosted(budget_rho=budget_comptage, nb_modalite=nb_modalite, poids=poids_comptage)
 
         rho_req_comptage = {lien_comptage_req[k]: rho for k, rho in rho_req.items() if k in lien_comptage_req}
         results = []
         for i, (key, request) in enumerate(lien_comptage_req.items()):
-            scale = 1/np.sqrt(2*rho_estimation[key])
+            scale = np.sqrt(var_atteint[key])
             results.append({"requête": request, "variable": key, "écart type": scale})
 
         return results, rho_req_comptage, poids_estimateur, lien_comptage_req
@@ -139,6 +140,7 @@ def server(input, output, session):
             print(f"Cas du total de la variable {variable}")
 
             rho_estimation, rho_req, poids_estimateur = sys_budget_dp(budget_rho=budget_total_variable, nb_modalite=nb_modalite, poids=poids_total)
+            var_atteint = optimization_boosted(budget_rho=budget_total_variable, nb_modalite=nb_modalite, poids=poids_total)
 
             rho_req_total[variable] = {lien_total_req[k]: rho for k, rho in rho_req.items() if k in lien_total_req}
             poids_estimateur_dict[variable] = poids_estimateur
@@ -147,7 +149,7 @@ def server(input, output, session):
             for i, (key_tot, key) in enumerate(lien_total_req.items()):
                 request = req_variable[key]
                 L, U = request["bounds"]
-                scale = max(abs(U), abs(L))/np.sqrt(2*rho_estimation[key_tot])
+                scale = max(abs(U), abs(L))*np.sqrt(var_atteint[key_tot])
 
                 resultat = process_request(dataset().lazy(), request)
                 resultat_non_biaise = process_request(dataset().lazy(), request, use_bounds=False)

@@ -10,6 +10,216 @@ from src.constant import (
 )
 
 
+def optimization_boosted(budget_rho, nb_modalite, poids):
+    from functools import reduce
+    import operator
+    import pandas as pd
+    import numpy as np
+    from itertools import product
+    from collections import defaultdict
+
+    total = sum(poids.values())
+    poids = {k: v / total for k, v in poids.items()}
+    poids_set = {
+        frozenset() if k == 'Total' else frozenset([k]) if isinstance(k, str) else frozenset(k): v
+        for k, v in poids.items()
+    }
+    liste_request = [s for s in poids_set.keys()]
+
+    # Trouver les maximaux (non inclus dans d'autres strictement plus grands)
+    maximaux = [
+        req for req in liste_request
+        if not any((req < other) for other in liste_request)
+    ]
+
+    non_maximaux = [req for req in liste_request if req not in maximaux]
+    liste_request = (
+        sorted(maximaux, key=lambda x: -len(x)) +
+        sorted(non_maximaux, key=lambda x: -len(x))
+    )
+
+    # Calcul de p
+    def produit_modalites(fset):
+        if not fset:
+            return 1
+        return reduce(operator.mul, (nb_modalite[v] for v in fset), 1)
+
+    p = sum(produit_modalites(fset) for fset in maximaux)
+    n = sum(produit_modalites(fset) for fset in liste_request)
+
+    # Affichage
+    print("Tous les frozensets :", liste_request)
+    print("Requêtes maximales :", maximaux)
+    print("Nombre de colonnes de X: p =", p)
+    print("Nombre de lignes de X: n =", n)
+
+    # 6. Génération des noms des bêtas
+    beta_names = [f"beta_{i+1}" for i in range(p)]
+
+    # 7. Construction des DataFrames pour chaque requête maximale
+    df_par_requete = {}
+    compteur = 0
+
+    for req in maximaux:
+        sorted_vars = sorted(req)
+        domains = [range(nb_modalite[v]) for v in sorted_vars]
+        combinations_vals = list(product(*domains))  # toutes les combinaisons pour cette requête
+        nb = len(combinations_vals)
+
+        # Associer les bonnes bêtas
+        betas = beta_names[compteur:compteur + nb]
+        compteur += nb
+
+        # Construire le DataFrame
+        df = pd.DataFrame(combinations_vals, columns=sorted_vars)
+        df["value"] = betas
+        df_par_requete[req] = df
+
+    # 8. Construction de la matrice X (n x p)
+    X = np.zeros((n, p), dtype=int)
+
+    # 8.1 Première partie : identité pour les lignes correspondant aux β
+    for i in range(p):
+        X[i, i] = 1
+
+    # 8.2 Reste : combinaisons/group_by
+    ligne_courante = p  # on commence après les p premières lignes
+    for req in liste_request:
+        if req in maximaux:
+            continue  # déjà traité via identité
+
+        # Chercher un maximal qui contient la requête
+        for max_req in maximaux:
+            if req <= max_req:
+                df = df_par_requete[max_req].copy()
+                # groupby + concaténation des strings de valeurs
+                if len(req) > 0:
+                    grouped = df.groupby(sorted(req))["value"].apply(lambda x: ' + '.join(x)).reset_index()
+                else:
+                    # cas du total : groupby sur rien → tout sommer
+                    grouped = pd.DataFrame({'value': [' + '.join(df["value"])]})
+
+                for _, row in grouped.iterrows():
+                    beta_sum = row["value"]
+                    for b in beta_sum.split(" + "):
+                        j = beta_names.index(b)
+                        X[ligne_courante, j] = 1
+                    ligne_courante += 1
+                break
+
+    # 10. R
+    R_rows = []
+
+    # Association des variables aux requêtes maximales
+    var_to_requetes = defaultdict(list)
+    for req in maximaux:
+        for var in req:
+            var_to_requetes[var].append(req)
+
+    # --- Contraintes liées aux variables partagées dans plusieurs requêtes maximales ---
+    for var, requetes in var_to_requetes.items():
+        if len(requetes) <= 1:
+            continue
+
+        ref_req = requetes[0]
+        df_ref = df_par_requete[ref_req]
+        grouped_ref = df_ref.groupby(var)['value'].apply(list)
+
+        for other_req in requetes[1:]:
+            df_other = df_par_requete[other_req]
+            grouped_other = df_other.groupby(var)['value'].apply(list)
+
+            modalities = list(grouped_ref.index)
+            # Enlever une modalité arbitraire (ex: la dernière) pour éviter redondance
+            if len(modalities) > 1:
+                modalities = modalities[:-1]
+
+            for modality in modalities:
+                betas_ref = grouped_ref[modality]
+                betas_other = grouped_other[modality]
+
+                row = np.zeros(len(beta_names))
+                for b in betas_ref:
+                    row[beta_names.index(b)] = 1
+                for b in betas_other:
+                    row[beta_names.index(b)] -= 1
+                R_rows.append(row)
+
+    # --- Contraintes liées au total (requête vide) : égalité entre les totaux de chaque requête maximale ---
+    # On suppose que df_par_requete[frozenset()] correspond à la requête vide
+    total_betas_by_req = {
+        req: df_par_requete[req]["value"].tolist()
+        for req in maximaux
+    }
+
+    max_reqs = list(total_betas_by_req.keys())
+    ref_req = max_reqs[0]
+
+    for other_req in max_reqs[1:]:
+        row = np.zeros(len(beta_names))
+        for b in total_betas_by_req[ref_req]:
+            row[beta_names.index(b)] = 1
+        for b in total_betas_by_req[other_req]:
+            row[beta_names.index(b)] -= 1
+        R_rows.append(row)
+
+    # --- Construction finale de la matrice R ---
+    if len(R_rows) > 0:
+        R = np.vstack(R_rows)
+    else:
+        R = np.empty((0, p))
+    print("R.shape =", R.shape)
+    print("R (matrice des contraintes):")
+    print(R)
+
+    import numpy as np
+    import itertools
+
+    # Hypothèse : X et R sont déjà définies
+    # Dimensions
+    n, p = X.shape
+
+    dict_request = {fset: {"nb_cellule": produit_modalites(fset), "sigma2": 1/(2*budget_rho*poids_set[fset])} for fset in liste_request}
+    # Matrice de variance Omega (hétéroscédastique)
+    sigma2 = np.array(list(itertools.chain.from_iterable(
+        [v["sigma2"]] * v["nb_cellule"] for v in dict_request.values()
+    )))
+
+    Omega_inv = np.diag(1 / sigma2)
+
+    # Matrice H = X^T Omega^{-1} X
+    H = X.T @ Omega_inv @ X
+    H_inv = np.linalg.inv(H)
+
+    # Projection liée à la contrainte R beta = 0
+    RHinv = R @ H_inv
+    middle_term = np.linalg.inv(RHinv @ R.T)
+    correction = H_inv @ R.T @ middle_term @ RHinv
+
+    # Variance corrigée de beta_hat sous contrainte R beta = 0
+    V_beta_constrained = H_inv - correction
+
+    # Facultatif : Variance de X beta (si tu veux l'effet de la contrainte sur les sorties)
+    V_Xbeta_constrained = X @ V_beta_constrained @ X.T
+    var_Xbeta_constrained = np.diag(V_Xbeta_constrained)
+
+    var_atteint = {}
+    index = 0
+    # Création du mapping entre frozenset (clé dans dict_request) et la clé d'origine de poids
+    fs_to_key = {
+        frozenset() if k == 'Total' else frozenset([k]) if isinstance(k, str) else frozenset(k): k
+        for k in poids
+    }
+
+    for fset in dict_request:
+        nb = dict_request[fset]["nb_cellule"]
+        if fset in fs_to_key:
+            original_key = fs_to_key[fset]
+            var_atteint[original_key] = var_Xbeta_constrained[index]
+        index += nb
+    return var_atteint
+
+
 def ameliorer_total(key, req, df_result, poids_estimateur_tot, results_store, lien_total_req_dict):
 
     variable = req["variable"]
