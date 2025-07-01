@@ -2,19 +2,20 @@
 from src.plots import (
     create_histo_plot, create_fc_emp_plot,
     create_score_plot, create_proba_plot,
-    create_barplot, create_grouped_barplot_cv
+    create_barplot, create_grouped_barplot_cv,
+    plot_subset_tree
 )
-from src.layout import (
-    page_donnees,
-    page_preparer_requetes,
-    page_introduction_dp,
-    page_conception_budget,
-    page_resultat_dp,
-    page_etat_budget_dataset,
+from src.layout.fonction_layout import (
     make_radio_buttons,
     affichage_requete,
     afficher_resultats
 )
+from src.layout.introduction_dp import page_introduction_dp
+from src.layout.donnees import page_donnees
+from src.layout.preparer_requetes import page_preparer_requetes
+from src.layout.conception_budget import page_conception_budget
+from src.layout.resultat_dp import page_resultat_dp
+from src.layout.etat_budget_dataset import page_etat_budget_dataset
 from src.process_tools import (
     process_request, process_request_dp, calculer_toutes_les_requetes
 )
@@ -22,7 +23,8 @@ from src.fonctions import (
     eps_from_rho_delta, optimization_boosted,
     sys_budget_dp, update_context,
     normalize_weights,
-    organiser_par_by, load_data
+    organiser_par_by, load_data,
+    generate_yaml_metadata_from_lazyframe_as_string
 )
 from src.constant import (
     storage_options
@@ -41,6 +43,7 @@ import pandas as pd
 import polars as pl
 import io
 import json
+import yaml
 
 dp.enable_features("contrib")
 
@@ -370,6 +373,21 @@ def server(input, output, session):
         df = pd.DataFrame(result)
         return create_barplot(df, x_col="requête", y_col="écart type", hoover="variable")
 
+    @render.plot
+    def graphe_plot():
+        if input.budget_total() == 0:
+            return None, None, None, None
+        data_requetes = requetes()
+        poids = normalized_weights()
+        req_comptage = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["count", "comptage"]}
+        poids_comptage, lien_comptage_req = organiser_par_by(req_comptage, poids)
+        poids_set = {
+            frozenset() if k == 'Total' else frozenset([k]) if isinstance(k, str) else frozenset(k): v
+            for k, v in poids_comptage.items()
+        }
+        liste_request = [s for s in poids_set.keys()]
+        return plot_subset_tree(liste_request, taille_noeuds=2000, keep_gris=False)
+
     @render_widget
     def plot_total():
         result, _, _, _ = X_total()
@@ -407,19 +425,23 @@ def server(input, output, session):
             else:
                 return load_data(input.default_dataset(), storage_options)
 
+
+    @reactive.Calc
+    def yaml_metadata_str():
+        return generate_yaml_metadata_from_lazyframe_as_string(dataset(), dataset_name="my_dataset")
+
+
     # Afficher le dataset
     @output
     @render.data_frame
     def data_view():
         return dataset().head(1000)
 
-    # Afficher le résumé statistique
+    # Afficher les métadata
     @output
-    @render.data_frame
-    def data_summary():
-        df = dataset().describe(percentiles=[0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9])
-
-        return df
+    @render.text
+    def meta_data():
+        return ui.tags.pre(yaml_metadata_str())
 
     # Page 2 ----------------------------------
 
@@ -450,21 +472,27 @@ def server(input, output, session):
     # Extrait les modalités uniques des variavles qualitatives
     @reactive.Calc
     def key_values():
-        df = dataset()
+        # Charger les métadonnées depuis ta chaîne YAML
+        metadata_dict = yaml.safe_load(yaml_metadata_str()) if yaml_metadata_str() else {}
+        if 'columns' not in metadata_dict:
+            return {}
 
-        df = df.select([col for col in df.columns if "id" not in col.lower()])
-
-        # Détecter les colonnes qualitatives (str ou catégorie)
-        qualitatif_cols = [
-            col for col, dtype in zip(df.columns, df.dtypes)
-            if dtype in [pl.Utf8, pl.Categorical, pl.Boolean]
+        # Extraire les colonnes qualitatives
+        qualitative_cols = [
+            col for col, meta in metadata_dict['columns'].items()
+            if meta.get('type') in ('Utf8', 'Categorical', 'Boolean', 'str', 'String')
         ]
 
-        # Extraire les modalités uniques, triées, sans NaN
-        return {
-            col: sorted(df[col].drop_nulls().unique().to_list())
-            for col in qualitatif_cols
-        }
+        # Récupérer les modalités uniques stockées dans 'unique_values_list'
+        modalities = {}
+        for col in qualitative_cols:
+            modal_list = metadata_dict['columns'][col].get('unique_values_list', [])
+            print(modal_list)
+            if modal_list:
+                modalities[col] = sorted(modal_list)
+            else:
+                modalities[col] = []
+        return modalities
 
     @reactive.Effect
     def update_variable_choices():
@@ -504,31 +532,39 @@ def server(input, output, session):
     def _():
         current = requetes().copy()
 
-        raw_min = input.borne_min()
-        raw_max = input.borne_max()
-        bounds = [float(raw_min), float(raw_max)] if raw_min != "" and raw_max != "" else None
+        # Charger les métadonnées YAML dans un dict (tu peux le faire une fois dans un Calc sinon)
+        metadata_dict = yaml.safe_load(yaml_metadata_str()) if yaml_metadata_str() else {}
+
+        variable = input.variable()
+        bounds = None
+
+        # Essayer de récupérer min/max dans YAML pour la variable choisie
+        if 'columns' in metadata_dict and variable in metadata_dict['columns']:
+            col_meta = metadata_dict['columns'][variable]
+            min_val = col_meta.get('min')
+            max_val = col_meta.get('max')
+            if min_val is not None and max_val is not None:
+                bounds = [float(min_val), float(max_val)]
 
         base_dict = {
             "type": input.type_req(),
-            "variable": input.variable(),
+            "variable": variable,
             "bounds": bounds,
-            "by": sorted(input.group_by()),  # 🔁 tri pour éviter les doublons d’ordre différent
+            "by": sorted(input.group_by()),  # tri pour éviter doublons
             "filtre": input.filtre(),
         }
 
         if input.type_req() == 'Quantile':
             base_dict.update({
                 "alpha": float(input.alpha()),
-                "candidat": input.candidat(),
+                "candidat": input.nb_candidat(),
             })
 
-        # Nettoyage des valeurs nulles ou vides
         clean_dict = {
             k: v for k, v in base_dict.items()
             if v not in [None, "", (), ["", ""], []]
         }
 
-        # 🔍 Vérifier si la même requête existe déjà
         if any(
             existing_req.get("type") == clean_dict.get("type") and
             existing_req.get("variable") == clean_dict.get("variable") and
@@ -544,15 +580,13 @@ def server(input, output, session):
             for existing_req in current.values()
         ):
             ui.notification_show("❌ Requête déjà existante (mêmes paramètres)", type="error")
-            return  # ❌ On quitte sans ajouter la requête
+            return
 
-        # 🆕 Générer un nouvel identifiant
         i = 1
         while f"req_{i}" in current:
             i += 1
         new_id = f"req_{i}"
 
-        # ✅ Ajouter la nouvelle requête
         current[new_id] = clean_dict
         requetes.set(current)
         ui.notification_show(f"✅ Requête `{new_id}` ajoutée", type="message")

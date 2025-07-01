@@ -8,6 +8,46 @@ from collections import defaultdict
 from src.constant import (
     OPS, radio_to_weight
 )
+import yaml
+import networkx as nx
+import matplotlib.pyplot as plt
+from itertools import combinations
+
+def generate_yaml_metadata_from_lazyframe_as_string(df: pl.DataFrame, dataset_name: str = "dataset"):
+    metadata = {
+        'dataset_name': dataset_name,
+        'n_rows': df.height,
+        'n_columns': df.width,
+        'columns': {}
+    }
+
+    for col in df.columns:
+        series = df[col]
+        dtype = series.dtype
+
+        col_meta = {
+            'type': str(dtype),
+            'missing': int(series.null_count())
+        }
+
+        if dtype in (pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+                     pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+                     pl.Float32, pl.Float64):
+            col_meta.update({
+                'mean': round(float(series.mean()), 2),
+                'std': round(float(series.std()), 2),
+                'min': round(float(series.min()), 2),
+                'max': round(float(series.max()), 2)
+            })
+
+        elif dtype == pl.Utf8 or dtype == pl.Categorical:
+            col_meta['unique_values'] = int(series.n_unique())
+            col_meta['unique_values_list'] = sorted(series.drop_nulls().unique().to_list())
+
+        metadata['columns'][col] = col_meta
+
+    yaml_str = yaml.dump(metadata, sort_keys=False, allow_unicode=True)
+    return yaml_str
 
 
 def optimization_boosted(budget_rho, nb_modalite, poids):
@@ -16,7 +56,6 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
     import pandas as pd
     import numpy as np
     from itertools import product
-    from collections import defaultdict
 
     total = sum(poids.values())
     poids = {k: v / total for k, v in poids.items()}
@@ -26,16 +65,16 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
     }
     liste_request = [s for s in poids_set.keys()]
 
-    # Trouver les maximaux (non inclus dans d'autres strictement plus grands)
-    maximaux = [
+    # Trouver les feuilles (non inclus dans d'autres strictement plus grands)
+    feuilles = [
         req for req in liste_request
         if not any((req < other) for other in liste_request)
     ]
 
-    non_maximaux = [req for req in liste_request if req not in maximaux]
+    non_feuilles = [req for req in liste_request if req not in feuilles]
     liste_request = (
-        sorted(maximaux, key=lambda x: -len(x)) +
-        sorted(non_maximaux, key=lambda x: -len(x))
+        sorted(feuilles, key=lambda x: -len(x)) +
+        sorted(non_feuilles, key=lambda x: -len(x))
     )
 
     # Calcul de p
@@ -44,12 +83,12 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
             return 1
         return reduce(operator.mul, (nb_modalite[v] for v in fset), 1)
 
-    p = sum(produit_modalites(fset) for fset in maximaux)
+    p = sum(produit_modalites(fset) for fset in feuilles)
     n = sum(produit_modalites(fset) for fset in liste_request)
 
     # Affichage
     print("Tous les frozensets :", liste_request)
-    print("Requêtes maximales :", maximaux)
+    print("Requêtes maximales :", feuilles)
     print("Nombre de colonnes de X: p =", p)
     print("Nombre de lignes de X: n =", n)
 
@@ -60,7 +99,7 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
     df_par_requete = {}
     compteur = 0
 
-    for req in maximaux:
+    for req in feuilles:
         sorted_vars = sorted(req)
         domains = [range(nb_modalite[v]) for v in sorted_vars]
         combinations_vals = list(product(*domains))  # toutes les combinaisons pour cette requête
@@ -85,11 +124,11 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
     # 8.2 Reste : combinaisons/group_by
     ligne_courante = p  # on commence après les p premières lignes
     for req in liste_request:
-        if req in maximaux:
+        if req in feuilles:
             continue  # déjà traité via identité
 
         # Chercher un maximal qui contient la requête
-        for max_req in maximaux:
+        for max_req in feuilles:
             if req <= max_req:
                 df = df_par_requete[max_req].copy()
                 # groupby + concaténation des strings de valeurs
@@ -110,64 +149,55 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
     # 10. R
     R_rows = []
 
-    # Association des variables aux requêtes maximales
-    var_to_requetes = defaultdict(list)
-    for req in maximaux:
-        for var in req:
-            var_to_requetes[var].append(req)
+    # On parcourt toutes les paires de requêtes maximales
+    for req1, req2 in combinations(feuilles, 2):
+        intersection = req1 & req2
+        df1 = df_par_requete[req1]
+        df2 = df_par_requete[req2]
 
-    # --- Contraintes liées aux variables partagées dans plusieurs requêtes maximales ---
-    for var, requetes in var_to_requetes.items():
-        if len(requetes) <= 1:
+        if not intersection:
+            # Cas particulier : contrainte sur le total global (somme de toutes les cellules)
+            betas1 = df1["value"].tolist()
+            betas2 = df2["value"].tolist()
+
+            row = np.zeros(len(beta_names))
+            for b in betas1:
+                row[beta_names.index(b)] = 1
+            for b in betas2:
+                row[beta_names.index(b)] -= 1
+            R_rows.append(row)
             continue
 
-        ref_req = requetes[0]
-        df_ref = df_par_requete[ref_req]
-        grouped_ref = df_ref.groupby(var)['value'].apply(list)
+        # Regrouper par les variables communes (intersection)
+        grouped1 = df1.groupby(list(intersection))["value"].apply(list)
+        grouped2 = df2.groupby(list(intersection))["value"].apply(list)
 
-        for other_req in requetes[1:]:
-            df_other = df_par_requete[other_req]
-            grouped_other = df_other.groupby(var)['value'].apply(list)
+        # On parcourt les modalités communes aux deux tables
+        common_modalities = grouped1.index.intersection(grouped2.index)
 
-            modalities = list(grouped_ref.index)
-            # Enlever une modalité arbitraire (ex: la dernière) pour éviter redondance
-            if len(modalities) > 1:
-                modalities = modalities[:-1]
+        modalities = list(common_modalities)
 
-            for modality in modalities:
-                betas_ref = grouped_ref[modality]
-                betas_other = grouped_other[modality]
+        for modality in modalities:
+            betas1 = grouped1[modality]
+            betas2 = grouped2[modality]
 
-                row = np.zeros(len(beta_names))
-                for b in betas_ref:
-                    row[beta_names.index(b)] = 1
-                for b in betas_other:
-                    row[beta_names.index(b)] -= 1
-                R_rows.append(row)
+            row = np.zeros(len(beta_names))
+            for b in betas1:
+                row[beta_names.index(b)] =  1
+            for b in betas2:
+                row[beta_names.index(b)] -= 1
+            R_rows.append(row)
 
-    # --- Contraintes liées au total (requête vide) : égalité entre les totaux de chaque requête maximale ---
-    # On suppose que df_par_requete[frozenset()] correspond à la requête vide
-    total_betas_by_req = {
-        req: df_par_requete[req]["value"].tolist()
-        for req in maximaux
-    }
+    def remove_dependent_rows_qr(R, tol=1e-10):
+        if R.shape[0] == 0:
+            return R
+        Q, R_qr = np.linalg.qr(R.T)  # QR sur les colonnes revient à détecter les lignes dépendantes
+        independent = np.abs(R_qr).sum(axis=1) > tol
+        return R[independent]
 
-    max_reqs = list(total_betas_by_req.keys())
-    ref_req = max_reqs[0]
-
-    for other_req in max_reqs[1:]:
-        row = np.zeros(len(beta_names))
-        for b in total_betas_by_req[ref_req]:
-            row[beta_names.index(b)] = 1
-        for b in total_betas_by_req[other_req]:
-            row[beta_names.index(b)] -= 1
-        R_rows.append(row)
-
-    # --- Construction finale de la matrice R ---
-    if len(R_rows) > 0:
-        R = np.vstack(R_rows)
-    else:
-        R = np.empty((0, p))
+    # Finalisation
+    R = np.vstack(R_rows) if R_rows else np.empty((0, len(beta_names)))
+    R = remove_dependent_rows_qr(R)
     print("R.shape =", R.shape)
     print("R (matrice des contraintes):")
     print(R)
@@ -397,7 +427,6 @@ def solve_projected(A, b):
 
 
 def sys_budget_dp(budget_rho, nb_modalite, poids):
-
     total = sum(poids.values())
     poids = {k: v / total for k, v in poids.items()}
     poids_set = {
