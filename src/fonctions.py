@@ -6,12 +6,24 @@ from scipy.optimize import fsolve
 import opendp.prelude as dp
 from collections import defaultdict
 from src.constant import (
-    OPS, radio_to_weight
+    radio_to_weight
 )
 import yaml
-import networkx as nx
-import matplotlib.pyplot as plt
-from itertools import combinations
+import operator
+from itertools import combinations, product
+from functools import reduce
+
+
+# Map des opérateurs Python vers leurs fonctions correspondantes
+OPS = {
+    "==": operator.eq,
+    "!=": operator.ne,
+    ">=": operator.ge,
+    "<=": operator.le,
+    ">": operator.gt,
+    "<": operator.lt,
+}
+
 
 def generate_yaml_metadata_from_lazyframe_as_string(df: pl.DataFrame, dataset_name: str = "dataset"):
     metadata = {
@@ -42,7 +54,6 @@ def generate_yaml_metadata_from_lazyframe_as_string(df: pl.DataFrame, dataset_na
 
         elif dtype == pl.Utf8 or dtype == pl.Categorical:
             col_meta['unique_values'] = int(series.n_unique())
-            col_meta['unique_values_list'] = sorted(series.drop_nulls().unique().to_list())
 
         metadata['columns'][col] = col_meta
 
@@ -51,16 +62,9 @@ def generate_yaml_metadata_from_lazyframe_as_string(df: pl.DataFrame, dataset_na
 
 
 def optimization_boosted(budget_rho, nb_modalite, poids):
-    from functools import reduce
-    import operator
-    import pandas as pd
-    import numpy as np
-    from itertools import product
 
-    total = sum(poids.values())
-    poids = {k: v / total for k, v in poids.items()}
     poids_set = {
-        frozenset() if k == 'Total' else frozenset([k]) if isinstance(k, str) else frozenset(k): v
+        frozenset() if k == 'Total' else frozenset([k]) if isinstance(k, str) else frozenset(k): v["poids_normalise"]
         for k, v in poids.items()
     }
     liste_request = [s for s in poids_set.keys()]
@@ -88,7 +92,7 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
 
     # Affichage
     print("Tous les frozensets :", liste_request)
-    print("Requêtes maximales :", feuilles)
+    print("Feuilles :", feuilles)
     print("Nombre de colonnes de X: p =", p)
     print("Nombre de lignes de X: n =", n)
 
@@ -202,12 +206,7 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
     print("R (matrice des contraintes):")
     print(R)
 
-    import numpy as np
     import itertools
-
-    # Hypothèse : X et R sont déjà définies
-    # Dimensions
-    n, p = X.shape
 
     dict_request = {fset: {"nb_cellule": produit_modalites(fset), "sigma2": 1/(2*budget_rho*poids_set[fset])} for fset in liste_request}
     # Matrice de variance Omega (hétéroscédastique)
@@ -229,25 +228,23 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
     # Variance corrigée de beta_hat sous contrainte R beta = 0
     V_beta_constrained = H_inv - correction
 
-    # Facultatif : Variance de X beta (si tu veux l'effet de la contrainte sur les sorties)
     V_Xbeta_constrained = X @ V_beta_constrained @ X.T
     var_Xbeta_constrained = np.diag(V_Xbeta_constrained)
 
-    var_atteint = {}
     index = 0
     # Création du mapping entre frozenset (clé dans dict_request) et la clé d'origine de poids
     fs_to_key = {
         frozenset() if k == 'Total' else frozenset([k]) if isinstance(k, str) else frozenset(k): k
         for k in poids
     }
-
+    print(var_Xbeta_constrained)
     for fset in dict_request:
         nb = dict_request[fset]["nb_cellule"]
         if fset in fs_to_key:
             original_key = fs_to_key[fset]
-            var_atteint[original_key] = var_Xbeta_constrained[index]
+            poids[original_key]["ecart_type_estimation"] = np.sqrt(var_Xbeta_constrained[index])
         index += nb
-    return var_atteint
+    return poids
 
 
 def ameliorer_total(key, req, df_result, poids_estimateur_tot, results_store, lien_total_req_dict):
@@ -600,35 +597,39 @@ def manual_quantile_score(data, candidats, alpha, et_si=False):
     return np.array(scores), max(alpha_num, alpha_denum - alpha_num)
 
 
-def organiser_par_by(dico_requetes, dico_valeurs):
-    result = defaultdict(dict)
-    result_bis = defaultdict(dict)
+def organiser_par_by(dico_requetes, dico_poids):
+    lien_croisement_req = defaultdict(dict)
+
+    # Première passe : création des entrées avec poids brut
     for req, params in dico_requetes.items():
-        # clé selon existence et contenu de 'by'
         if 'by' not in params:
             key = 'Total'
         else:
             by = params['by']
-            # gérer le cas où by est une string au lieu d'une liste
             if isinstance(by, str):
                 key = by
             elif isinstance(by, list):
-                if len(by) == 1:
-                    key = by[0]
-                else:
-                    key = tuple(by)
+                key = by[0] if len(by) == 1 else tuple(by)
             else:
-                # cas imprévu, on met en tot par défaut
                 key = 'Total'
 
-        # ajouter la valeur correspondante si elle existe dans dico_valeurs
-        if req in dico_valeurs:
-            result[key] = dico_valeurs[req]
-            result_bis[key] = req
-    return dict(result), dict(result_bis)
+        if req in dico_poids:
+            value = {"req": req, "poids": dico_poids[req]}
+            lien_croisement_req[key] = value
+
+    # Deuxième passe : calcul des poids normalisés
+    total_poids = sum(v["poids"] for v in lien_croisement_req.values())
+    if total_poids > 0:
+        for v in lien_croisement_req.values():
+            v["poids_normalise"] = v["poids"] / total_poids
+    else:
+        for v in lien_croisement_req.values():
+            v["poids_normalise"] = 0.0  # ou None si tu préfères
+
+    return dict(lien_croisement_req)
 
 
-def normalize_weights(request, input) -> dict:
+def get_weights(request, input) -> dict:
     raw_weights = {
         key: radio_to_weight.get(float(getattr(input, key)()), 0)
         for key, requete in request.items()

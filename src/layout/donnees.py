@@ -1,4 +1,7 @@
 from shiny import ui
+from src.constant import (
+    chemin_dataset
+)
 
 
 def page_donnees():
@@ -16,13 +19,7 @@ def sidebar_donnees():
         ui.input_select(
             "default_dataset",
             "Choisir un jeu de données prédéfini:",
-            {
-                "penguins": "Palmer Penguins",
-                "s3://gferey/diffusion/synthetic-filo/METRO/households/households_METRO.parquet": "Foyers Métropole",
-                "s3://gferey/diffusion/synthetic-filo/METRO/population/population_METRO.parquet": "Population Métropole",
-                "s3://gferey/diffusion/synthetic-filo/974/households/households_974.parquet": "Foyers Réunion",
-                "s3://gferey/diffusion/synthetic-filo/974/population/population_974.parquet": "Population Réunion"
-            }
+            chemin_dataset,
         ),
         ui.input_file("dataset_input", "Ou importer un fichier CSV ou Parquet", accept=[".csv", ".parquet"]),
         position='right',

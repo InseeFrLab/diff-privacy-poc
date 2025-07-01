@@ -1,7 +1,7 @@
 from shiny import ui
 from shinywidgets import output_widget
 from src.constant import (
-    regions_france, dataset
+    regions_france, name_dataset
 )
 
 
@@ -26,7 +26,7 @@ def sidebar_budget():
         ui.h3("Définition du budget"),
         ui.input_numeric("budget_total", "Budget total :", 0.1, min=0, max=1, step=0.01),
         ui.input_selectize("echelle_geo", "Echelle géographique de l'étude:", choices=regions_france, selected="France entière"),
-        ui.input_selectize("dataset_name", "Nom du dataset:", choices=dataset, selected="Penguin", options={"create": True}),
+        ui.input_selectize("dataset_name", "Nom du dataset:", choices=name_dataset, selected="Penguin", options={"create": True}),
         ui.input_action_button("valider_budget", "Valider le budget DP"),
         position="right",
         bg="#f8f8f8"

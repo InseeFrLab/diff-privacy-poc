@@ -1,5 +1,4 @@
 import os
-import operator
 
 storage_options = {
     "aws_access_key_id": os.environ["AWS_ACCESS_KEY_ID"],
@@ -30,20 +29,18 @@ regions_france = [
     "Mayotte"
 ]
 
-dataset = [
+name_dataset = [
     "Fidéli",
     "Filosofi",
     "Penguin"
 ]
 
-# Map des opérateurs Python vers leurs fonctions correspondantes
-OPS = {
-    "==": operator.eq,
-    "!=": operator.ne,
-    ">=": operator.ge,
-    "<=": operator.le,
-    ">": operator.gt,
-    "<": operator.lt,
+chemin_dataset = {
+    "penguins": "Palmer Penguins",
+    "s3://gferey/diffusion/synthetic-filo/METRO/households/households_METRO.parquet": "Foyers Métropole",
+    "s3://gferey/diffusion/synthetic-filo/METRO/population/population_METRO.parquet": "Population Métropole",
+    "s3://gferey/diffusion/synthetic-filo/974/households/households_974.parquet": "Foyers Réunion",
+    "s3://gferey/diffusion/synthetic-filo/974/population/population_974.parquet": "Population Réunion"
 }
 
 radio_to_weight = {1: 1, 2: 0.5, 3: 0.25}
