@@ -1,5 +1,5 @@
 from src.fonctions import (
-    parse_filter_string, manual_quantile_score
+    parse_filter_string
 )
 
 from abc import ABC, abstractmethod
@@ -192,6 +192,8 @@ class mean_dp(request_dp):
     """
     def execute(self):
         l, u = self.bounds
+        center = (u + l) / 2
+        half_range = (u - l) / 2
         query = self.context.query()
         dtype = query.collect_schema().get(self.variable)
         query = self.context.query()
@@ -199,16 +201,15 @@ class mean_dp(request_dp):
 
         # Construction conditionnelle des expressions
         col_var = pl.col(self.variable)
-
-        total_expr = col_var.fill_null(0)
+        centered_col = (col_var - center).fill_null(0)
         len_expr = col_var.fill_null(1)
 
         if is_float:
-            total_expr = total_expr.fill_nan(0)
+            centered_col = centered_col.fill_nan(0)
             len_expr = len_expr.fill_nan(1)
 
         expr = (
-            total_expr.dp.sum(bounds=(l, u)).alias("sum"),
+            centered_col.dp.sum(bounds=(-half_range, half_range)).alias("centered_sum"),
             len_expr.dp.sum(bounds=(1, 1)).alias("count")
         )
 
@@ -223,6 +224,14 @@ class mean_dp(request_dp):
             )
         else:
             query = query.select(expr)
+
+        # Calcul de la moyenne centrée bruitée, puis clipping, puis recentrage
+        query = query.with_columns(
+            (
+                (pl.col("centered_sum") / pl.col("count"))
+                .clip(-half_range, half_range) + center
+            ).alias("mean")
+        )
 
         return query
 
@@ -306,33 +315,6 @@ class quantile_dp(request_dp):
 
         return query
 
-    def precision(self, data, epsilon):
-        # Calcul des scores et sensibilité
-        scores, sensi = manual_quantile_score(
-            data.collect()[self.variable].to_numpy(),
-            self.candidats,
-            alpha=self.list_alpha[0],
-            et_si=True
-        )
+    def precision(self, alpha=0.05):
+        return self.execute().summarize(alpha=alpha)
 
-        # Probabilités exponentielles
-        proba_non_norm = np.exp(-epsilon * scores / (2 * sensi))
-        proba = proba_non_norm / np.sum(proba_non_norm)
-
-        # Tri décroissant des probabilités
-        sorted_indices = np.argsort(proba)[::-1]
-        sorted_proba = np.array(proba)[sorted_indices]
-        sorted_candidats = np.array(self.candidats)[sorted_indices]
-
-        # Sélection des indices jusqu'à ce que la somme atteigne 95%
-        cumulative = np.cumsum(sorted_proba)
-        top95_mask = cumulative <= 0.95
-        if not np.all(top95_mask):  # Ajouter aussi l'élément qui dépasse 95%
-            top95_mask[np.argmax(cumulative > 0.95)] = True
-
-        candidats_top95 = sorted_candidats[top95_mask]
-
-        # Calcul de la différence maximale entre ces candidats
-        precision_val = np.max(candidats_top95) - np.min(candidats_top95)
-
-        return precision_val

@@ -128,19 +128,14 @@ def process_request(df: pl.LazyFrame, req: dict, use_bounds=True) -> pl.LazyFram
             df = df.select(pl.col(variable).sum().alias("sum"))
 
     elif type_req == "quantile" or type_req == "Quantile":
-        if alpha is None:
-            alpha = [0.5]
-
-        elif not isinstance(alpha, list):
-            alpha = [alpha]
 
         if by:
             df = df.group_by(by).agg(
-                pl.col(variable).quantile(alpha, interpolation="nearest").alias(f"quantile_{alpha}") for alpha in alpha
+                pl.col(variable).quantile(alpha, interpolation="nearest").alias(f"quantile_{alpha}")
             )
         else:
             df = df.select(
-                pl.col(variable).quantile(alpha, interpolation="nearest").alias(f"quantile_{alpha}") for alpha in alpha
+                pl.col(variable).quantile(alpha, interpolation="nearest").alias(f"quantile_{alpha}")
             )
 
     else:

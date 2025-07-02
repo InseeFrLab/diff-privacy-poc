@@ -78,7 +78,7 @@ def create_grouped_barplot_cv(df):
     return fig
 
 
-def create_barplot(df, x_col, y_col, hoover=None):
+def create_barplot(df, x_col, y_col, hoover, color):
     fig = go.Figure()
 
     if not df.empty:
@@ -86,22 +86,22 @@ def create_barplot(df, x_col, y_col, hoover=None):
         if hoover is not None and hoover in df.columns:
             hover_texts = []
             colors = []
-            for cross, val in zip(df[hoover], df[y_col]):
+            for cross, color, val in zip(df[hoover], df[color], df[y_col]):
                 # Déterminer le texte
                 if isinstance(val, (int, float)):
-                    val_text = f"{val:.2f}"
+                    val_text = f"{val:.1f}"
                 else:
                     val_text = str(val)
                 hover_texts.append(f"{cross}<br>{y_col}: {val_text}")
 
                 # Déterminer la couleur
-                if cross == "Total":
+                if color == "Aucun":
                     colors.append("darkgreen")
-                elif isinstance(cross, str):
+                elif isinstance(color, str):
                     colors.append("steelblue")
-                elif isinstance(cross, tuple) and len(cross) == 2:
+                elif isinstance(color, tuple) and len(color) == 2:
                     colors.append("darkorange")
-                elif isinstance(cross, tuple) and len(cross) == 3:
+                elif isinstance(color, tuple) and len(color) == 3:
                     colors.append("firebrick")
                 else:
                     colors.append("gray")  # fallback par sécurité

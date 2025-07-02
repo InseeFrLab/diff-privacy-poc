@@ -22,7 +22,7 @@ from src.process_tools import (
 from src.fonctions import (
     eps_from_rho_delta, optimization_boosted,
     update_context,
-    get_weights,
+    get_weights, intervalle_confiance_quantile,
     organiser_par_by, load_data,
     generate_yaml_metadata_from_lazyframe_as_string
 )
@@ -91,26 +91,26 @@ def server(input, output, session):
         poids_req = get_poids()
 
         req_comptage = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["count", "comptage"]}
-        lien_croisement_req = organiser_par_by(req_comptage, poids_req)
-        budget_comptage = input.budget_total() * sum(croisement["poids"] for croisement in lien_croisement_req.values())
+        req_comptage_croisement = organiser_par_by(req_comptage, poids_req)
+        budget_comptage = input.budget_total() * sum(croisement["poids"] for croisement in req_comptage_croisement.values())
 
         if budget_comptage == 0:
             return None
 
-        lien_croisement_req = optimization_boosted(budget_rho=budget_comptage, nb_modalite=nb_modalite_var(), poids=lien_croisement_req)
+        req_comptage_croisement = optimization_boosted(budget_rho=budget_comptage, nb_modalite=nb_modalite_var(), poids=req_comptage_croisement)
 
-        return lien_croisement_req
+        return req_comptage_croisement
 
     @reactive.Calc
     def df_comptage():
-        lien_croisement_req = conception_req_count()
+        req_comptage_croisement = conception_req_count()
 
         results = []
-        for i, (croisement, request) in enumerate(lien_croisement_req.items()):
+        for i, (croisement, request) in enumerate(req_comptage_croisement.items()):
             results.append({
                 "requête": request['req'],
-                "variable": croisement,
-                "écart type": request["ecart_type_estimation"]
+                "groupement": croisement,
+                "écart type": request["scale"]
             })
 
         return pd.DataFrame(results).round(1)
@@ -122,28 +122,26 @@ def server(input, output, session):
 
     @render_widget
     def plot_comptage():
-        df = df_comptage()
-        return create_barplot(df, x_col="requête", y_col="écart type", hoover="variable")
+        return create_barplot(df_comptage(), x_col="requête", y_col="écart type", hoover="groupement", color="groupement")
 
     @render.plot
     def graphe_plot():
-        lien_croisement_req = conception_req_count()
+        req_comptage_croisement = conception_req_count()
         liste_request = [
-            frozenset() if k == 'Total' else frozenset([k]) if isinstance(k, str) else frozenset(k)
-            for k in lien_croisement_req.keys()
+            frozenset() if k == 'Aucun' else frozenset([k]) if isinstance(k, str) else frozenset(k)
+            for k in req_comptage_croisement.keys()
         ]
         return plot_subset_tree(liste_request, taille_noeuds=2000, keep_gris=False)
-
 
     @reactive.Calc
     def conception_req_sum():
 
         data_requetes = requetes()
         poids_req = get_poids()
+        print(6000/np.sqrt(2*0.069))
 
         req_total = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["total", "sum", "somme"]}
-
-        lien_total_req_dict = {}
+        req_total_croisement_par_variable = {}
 
         # Récupération des variables distinctes
         variables_uniques = set(v["variable"] for v in req_total.values())
@@ -156,59 +154,59 @@ def server(input, output, session):
                 if v["variable"] == variable
             }
 
-            lien_total_req = organiser_par_by(req_variable, poids_req)
-            budget_total_variable = input.budget_total() * sum(croisement["poids"] for croisement in lien_total_req.values())
+            req_total_croisement = organiser_par_by(req_variable, poids_req)
+            budget_total_variable = input.budget_total() * sum(croisement["poids"] for croisement in req_total_croisement.values())
 
             if budget_total_variable == 0:
                 return None
 
-            lien_total_req = optimization_boosted(budget_rho=budget_total_variable, nb_modalite=nb_modalite_var(), poids=lien_total_req)
+            req_total_croisement = optimization_boosted(budget_rho=budget_total_variable, nb_modalite=nb_modalite_var(), poids=req_total_croisement)
+            req_total_croisement_par_variable[variable] = req_total_croisement
 
-            lien_total_req_dict[variable] = lien_total_req
-
-        return lien_total_req_dict
+        return req_total_croisement_par_variable
 
     @reactive.Calc
     def df_total():
-        lien_total_req_dict = conception_req_sum()
+        req_total_croisement_par_variable = conception_req_sum()
         data_requetes = requetes()
 
         results = []
-        for variable, lien_total_req in lien_total_req_dict.items():
-            for i, (croisement, request) in enumerate(lien_total_req.items()):
+        for variable, req_total_croisement in req_total_croisement_par_variable.items():
+            for i, (croisement, request) in enumerate(req_total_croisement.items()):
                 req = data_requetes[request["req"]]
                 L, U = req["bounds"]
-                scale = max(abs(U), abs(L))*request["ecart_type_estimation"]
+                scale = max(abs(U), abs(L))*request["scale"]
+
+                label = f"{variable}<br>groupement: {croisement}"
 
                 resultat = process_request(dataset().lazy(), req)
                 resultat_non_biaise = process_request(dataset().lazy(), req, use_bounds=False)
 
-                for row_biaise, row_non_biaise in zip(resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)):
-                    # Extraction des modalités croisées
-                    modalites = [str(v) for k, v in row_biaise.items() if k != "sum"]
+                list_cv = []
+                list_biais_relatif = []
 
-                    # Construction de l’étiquette
-                    if not modalites:
-                        label = f"{variable}"
-                    else:
-                        label = f"{variable} ({', '.join(modalites)})"
+                for row_biaise, row_non_biaise in zip(resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)):
 
                     # Calcul du CV
                     cv = 100 * scale / row_biaise["sum"] if row_biaise["sum"] != 0 else float("inf")
-
                     biais = row_biaise["sum"] - row_non_biaise["sum"]
                     biais_relatif = 100 * biais / row_non_biaise["sum"]
 
-                    results.append({
-                        "requête": request["req"],
-                        "label": label,
-                        "variable": variable,
-                        "modalité": modalites,
-                        "cv (%)": cv,
-                        "biais relatif (%)": biais_relatif,
-                        "écart type": scale,
-                        'biais': biais
-                    })
+                    list_cv.append(cv)
+                    list_biais_relatif.append(biais_relatif)
+
+                cv_moyen = np.mean(list_cv)
+                biais_relatif_moyen = np.mean(list_biais_relatif)
+
+                results.append({
+                    "requête": request["req"],
+                    "label": label,
+                    "variable": variable,
+                    "groupement": croisement,
+                    "cv moyen (%)": cv_moyen,
+                    "biais relatif moyen (%)": biais_relatif_moyen,
+                    "écart type": scale
+                })
         return pd.DataFrame(results).round(1)
 
     @output
@@ -219,96 +217,170 @@ def server(input, output, session):
 
     @render_widget
     def plot_total():
-        return create_grouped_barplot_cv(df_total())
+        return create_barplot(df_total(), x_col="requête", y_col="cv moyen (%)", hoover="label", color="groupement")
 
     @reactive.Calc
-    def X_moyenne():
-        if input.budget_total() == 0:
-            return None
+    def conception_req_mean():
 
         data_requetes = requetes()
         poids_req = get_poids()
-        results = []
 
-        req_moyenne = {
-            k: v for k, v in data_requetes.items()
-            if v["type"].lower() in ["moyenne"]
-        }
+        req_moyenne = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["moyenne", "mean"]}
+        req_moyenne_croisement_par_variable = {}
 
-        for key, request in req_moyenne.items():
-            poids = poids_req[key]
-            v_min, v_max = request["bounds"]
-            variable = request.get("variable", "Variable")
+        variables_uniques = set(v["variable"] for v in req_moyenne.values())
 
-            scale_tot = max(abs(v_min), abs(v_max)) / np.sqrt(input.budget_total() * poids /2)
-            scale_len = 1 / np.sqrt(input.budget_total() * poids /2)
-
-            resultat = process_request(dataset().lazy(), request)
-            resultat_non_biaise = process_request(dataset().lazy(), request, use_bounds=False)
-            for row_biaise, row_non_biaise in zip(resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)):
-                total = row_biaise.get("sum", 0)
-                total_non_biaise = row_non_biaise.get("sum", 0)
-                count = row_biaise.get("count", 1)
-
-                cv_total = scale_tot / total if total != 0 else float("inf")
-                cv_count = scale_len / count if count != 0 else float("inf")
-                cv = 100 * np.sqrt(cv_total**2 + cv_count**2)
-
-                modalites = [str(v) for k, v in row_biaise.items() if k not in ["sum", "count", "mean"]]
-
-                if not modalites:
-                    label = f"{variable}"
-                else:
-                    label = f"{variable} ({', '.join(modalites)})"
-
-                biais = (total - total_non_biaise) / count
-                biais_relatif = 100 * biais / (total_non_biaise/count)
-
-                results.append({
-                    "requête": key,
-                    "label": label,
-                    "variable": variable,
-                    "modalité": modalites,
-                    "cv (%)": cv,
-                    "biais relatif (%)": biais_relatif,
-                    "biais": biais,
-                    "cv total (%)": 100*cv_total,
-                    "écart type total": scale_tot,
-                    "cv comptage (%)": 100*cv_count,
-                    "écart type comptage": scale_len
-                })
-
-            results.sort(key=lambda x: x["cv (%)"])
-
-        return results
-
-    @reactive.Calc
-    def X_quantile():
-        if input.budget_total() == 0:
-            return None
-        data_requetes = requetes()
-        poids_req = get_poids()
-        results = []
-        req_quantile = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["quantile"]}
-        for i, (key, request) in enumerate(req_quantile.items()):
-            poids = poids_req[key]
-
-            context_param = {
-                "data": dataset().lazy(),
-                "privacy_unit": dp.unit_of(contributions=1),
-                "margins": [dp.polars.Margin(max_partition_length=10000)],
+        # Boucle sur chaque variable unique
+        for variable in variables_uniques:
+            # Sous-ensemble des requêtes ayant cette variable
+            req_variable = {
+                k: v for k, v in req_moyenne.items()
+                if v["variable"] == variable
             }
 
-            context_comptage, context_tot, context_moy, context_quantile = update_context(context_param, input.budget_total(), 0, 0, [], [], [], [1])
+            req_moyenne_croisement = organiser_par_by(req_variable, poids_req)
 
-            resultat_dp = process_request_dp(context_comptage, context_tot, context_moy, context_quantile, nb_modalite_var(), request)
-            intervalle_candidats = resultat_dp.precision(
-                data=dataset().lazy(),
-                epsilon=np.sqrt(8 * input.budget_total() * poids)
-            )
-            results.append({"requête": key, "candidats": intervalle_candidats})
+            for croisement, request in req_moyenne_croisement.items():
 
-        return results
+                budget_req_moyenne = input.budget_total() * request["poids"]
+                req = data_requetes[request["req"]]
+
+                L, U = req["bounds"]
+                scale_total = (U - L) / (2 * np.sqrt(budget_req_moyenne / 2))
+                scale_comptage = 1 / np.sqrt(budget_req_moyenne / 2)
+
+                req_moyenne_croisement[croisement]["scale_total"] = scale_total
+                req_moyenne_croisement[croisement]["scale_comptage"] = scale_comptage
+
+            req_moyenne_croisement_par_variable[variable] = req_moyenne_croisement
+
+        return req_moyenne_croisement_par_variable
+
+    @reactive.Calc
+    def df_moyenne():
+        req_moyenne_croisement_par_variable = conception_req_mean()
+        data_requetes = requetes()
+
+        results = []
+        for variable, req_total_croisement in req_moyenne_croisement_par_variable.items():
+            for i, (croisement, request) in enumerate(req_total_croisement.items()):
+                req = data_requetes[request["req"]]
+
+                label = f"{variable}<br>groupement: {croisement}"
+
+                resultat = process_request(dataset().lazy(), req)
+                resultat_non_biaise = process_request(dataset().lazy(), req, use_bounds=False)
+
+                list_cv = []
+                list_biais_relatif = []
+
+                for row_biaise, row_non_biaise in zip(resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)):
+                    total = row_biaise.get("sum", 0)
+                    total_non_biaise = row_non_biaise.get("sum", 0)
+                    count = row_biaise.get("count", 1)
+
+                    cv_total = request['scale_total'] / total if total != 0 else float("inf")
+                    print(cv_total)
+                    cv_count = request['scale_comptage'] / count if count != 0 else float("inf")
+                    print(cv_count)
+                    cv = 100 * np.sqrt(cv_total**2 + cv_count**2)
+
+                    biais = (total - total_non_biaise) / count
+                    biais_relatif = 100 * biais / (total_non_biaise/count)
+
+                    list_cv.append(cv)
+                    list_biais_relatif.append(biais_relatif)
+
+                cv_moyen = np.mean(list_cv)
+                biais_relatif_moyen = np.mean(list_biais_relatif)
+
+                results.append({
+                    "requête": request["req"],
+                    "label": label,
+                    "variable": variable,
+                    "groupement": croisement,
+                    "cv moyen (%)": cv_moyen,
+                    "biais relatif moyen (%)": biais_relatif_moyen,
+                    "écart type total": request['scale_total'],
+                    "écart type comptage": request['scale_comptage']
+                })
+
+        return pd.DataFrame(results).round(1)
+
+    @output
+    @render.data_frame
+    def table_moyenne():
+        df = df_moyenne().drop(columns="label").round(0)
+        return df
+
+    @render_widget
+    def plot_moyenne():
+        return create_barplot(df_moyenne(), x_col="requête", y_col="cv moyen (%)", hoover="label", color="groupement")
+
+    @reactive.Calc
+    def conception_req_quantile():
+
+        data_requetes = requetes()
+        poids_req = get_poids()
+
+        req_quantile = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["quantile"]}
+        req_quantile_croisement_par_variable = {}
+
+        variables_uniques = set(v["variable"] for v in req_quantile.values())
+
+        # Boucle sur chaque variable unique
+        for variable in variables_uniques:
+            # Sous-ensemble des requêtes ayant cette variable
+            req_variable = {
+                k: v for k, v in req_quantile.items()
+                if v["variable"] == variable
+            }
+
+            req_quantile_croisement = organiser_par_by(req_variable, poids_req)
+
+            for croisement, request in req_quantile_croisement.items():
+
+                budget_req_quantile = input.budget_total() * request["poids"]
+                epsilon = np.sqrt(8 * budget_req_quantile)
+
+                req = data_requetes[request["req"]]
+
+                ic = intervalle_confiance_quantile(dataset(), req, epsilon)
+
+                req_quantile_croisement[croisement]["scale"] = ic
+
+            req_quantile_croisement_par_variable[variable] = req_quantile_croisement
+
+        return req_quantile_croisement_par_variable
+
+    @reactive.Calc
+    def df_quantile():
+        req_quantile_croisement_par_variable = conception_req_quantile()
+
+        results = []
+        for variable, req_quantile_croisement in req_quantile_croisement_par_variable.items():
+            for i, (croisement, request) in enumerate(req_quantile_croisement.items()):
+
+                label = f"{variable}<br>groupement: {croisement}"
+
+                results.append({
+                    "requête": request["req"],
+                    "label": label,
+                    "variable": variable,
+                    "groupement": croisement,
+                    "taille moyenne IC 95%": request["scale"]
+                })
+        return pd.DataFrame(results).round(1)
+
+    @output
+    @render.data_frame
+    def table_quantile():
+        df = df_quantile().drop(columns="label").round(0)
+        return df
+
+    @render_widget
+    def plot_quantile():
+        return create_barplot(df_quantile(), x_col="requête", y_col="taille moyenne IC 95%", hoover="label", color="groupement")
 
     @output
     @render.ui
@@ -377,30 +449,6 @@ def server(input, output, session):
         return afficher_resultats(resultats_df, requetes(), poids_estimateur, poids_estimateur_dict, lien_comptage_req, lien_total_req_dict)
 
 
-    @output
-    @render.data_frame
-    def table_moyenne():
-        df = pd.DataFrame(X_moyenne()).drop(columns="label").round(0)
-        return df
-
-    @output
-    @render.data_frame
-    def table_quantile():
-        df = pd.DataFrame(X_quantile()).round(1)
-        return df
-
-
-    @render_widget
-    def plot_moyenne():
-        df = pd.DataFrame(X_moyenne())
-        return create_grouped_barplot_cv(df)
-
-    @render_widget
-    def plot_quantile():
-        df = pd.DataFrame(X_quantile())
-        return create_barplot(df, x_col="requête", y_col="candidats", hoover=None)
-
-
     # Page 1 ----------------------------------
 
     # Lire le dataset si importé sinon dataset déjà en mémoire
@@ -425,7 +473,6 @@ def server(input, output, session):
     @reactive.Calc
     def yaml_metadata_str():
         return generate_yaml_metadata_from_lazyframe_as_string(dataset(), dataset_name="my_dataset")
-
 
     # Afficher le dataset
     @output
@@ -547,7 +594,7 @@ def server(input, output, session):
         if input.type_req() == 'Quantile':
             base_dict.update({
                 "alpha": float(input.alpha()),
-                "candidat": input.nb_candidat(),
+                "nb_candidats": input.nb_candidats(),
             })
 
         clean_dict = {
@@ -564,7 +611,7 @@ def server(input, output, session):
             (
                 input.type_req() != "Quantile" or (
                     existing_req.get("alpha") == clean_dict.get("alpha") and
-                    existing_req.get("candidat") == clean_dict.get("candidat")
+                    existing_req.get("nb_candidats") == clean_dict.get("nb_candidats")
                 )
             )
             for existing_req in current.values()
@@ -628,11 +675,10 @@ def server(input, output, session):
             return ui.p("Aucune requête chargée.")
         return affichage_requete(data_requetes, dataset())
 
-    @reactive.effect
-    def disable_variable_if_comptage():
-        # Crée un message JS pour désactiver ou activer l'élément
-        is_comptage = input.type_req() == "Comptage"
-        session.send_input_message("variable", {"disabled": is_comptage})
+
+
+
+
 
     # Page 3 ----------------------------------
 

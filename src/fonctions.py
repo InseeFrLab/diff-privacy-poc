@@ -25,6 +25,78 @@ OPS = {
 }
 
 
+def intervalle_confiance_quantile(dataset, req, epsilon):
+    variable = req.get("variable")
+    bounds_min, bounds_max = req.get("bounds")
+    alpha = req.get("alpha")
+    nb_candidats = int(req.get("nb_candidats"))
+    by = req.get("by")
+
+    candidats = np.linspace(bounds_min, bounds_max, nb_candidats + 1)
+    precisions = []
+
+    # Si pas de group_by, on applique directement
+    if by is None:
+        data_variable = dataset[variable].to_numpy()
+
+        scores, sensi = manual_quantile_score(
+            data_variable,
+            candidats,
+            alpha=alpha,
+            et_si=True
+        )
+
+        proba_non_norm = np.exp(-epsilon * scores / (2 * sensi))
+        proba = proba_non_norm / np.sum(proba_non_norm)
+
+        sorted_indices = np.argsort(proba)[::-1]
+        sorted_proba = np.array(proba)[sorted_indices]
+        sorted_candidats = np.array(candidats)[sorted_indices]
+
+        cumulative = np.cumsum(sorted_proba)
+        top95_mask = cumulative <= 0.95
+        if not np.all(top95_mask):
+            top95_mask[np.argmax(cumulative > 0.95)] = True
+
+        candidats_top95 = sorted_candidats[top95_mask]
+        precision_val = np.max(candidats_top95) - np.min(candidats_top95)
+        return precision_val
+
+    # Si group_by, on boucle sur chaque modalité
+    grouped = dataset.group_by(by)
+
+    for _, group_df in grouped:
+        data_variable = group_df[variable].to_numpy()
+
+        if len(data_variable) == 0:
+            continue  # éviter les groupes vides
+
+        scores, sensi = manual_quantile_score(
+            data_variable,
+            candidats,
+            alpha=alpha,
+            et_si=True
+        )
+
+        proba_non_norm = np.exp(-epsilon * scores / (2 * sensi))
+        proba = proba_non_norm / np.sum(proba_non_norm)
+
+        sorted_indices = np.argsort(proba)[::-1]
+        sorted_proba = np.array(proba)[sorted_indices]
+        sorted_candidats = np.array(candidats)[sorted_indices]
+
+        cumulative = np.cumsum(sorted_proba)
+        top95_mask = cumulative <= 0.95
+        if not np.all(top95_mask):
+            top95_mask[np.argmax(cumulative > 0.95)] = True
+
+        candidats_top95 = sorted_candidats[top95_mask]
+        precision_val = np.max(candidats_top95) - np.min(candidats_top95)
+        precisions.append(precision_val)
+
+    return np.mean(precisions) if precisions else None
+
+
 def generate_yaml_metadata_from_lazyframe_as_string(df: pl.DataFrame, dataset_name: str = "dataset"):
     metadata = {
         'dataset_name': dataset_name,
@@ -64,7 +136,7 @@ def generate_yaml_metadata_from_lazyframe_as_string(df: pl.DataFrame, dataset_na
 def optimization_boosted(budget_rho, nb_modalite, poids):
 
     poids_set = {
-        frozenset() if k == 'Total' else frozenset([k]) if isinstance(k, str) else frozenset(k): v["poids_normalise"]
+        frozenset() if k == 'Aucun' else frozenset([k]) if isinstance(k, str) else frozenset(k): v["poids_normalise"]
         for k, v in poids.items()
     }
     liste_request = [s for s in poids_set.keys()]
@@ -234,7 +306,7 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
     index = 0
     # Création du mapping entre frozenset (clé dans dict_request) et la clé d'origine de poids
     fs_to_key = {
-        frozenset() if k == 'Total' else frozenset([k]) if isinstance(k, str) else frozenset(k): k
+        frozenset() if k == 'Aucun' else frozenset([k]) if isinstance(k, str) else frozenset(k): k
         for k in poids
     }
     print(var_Xbeta_constrained)
@@ -242,7 +314,7 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
         nb = dict_request[fset]["nb_cellule"]
         if fset in fs_to_key:
             original_key = fs_to_key[fset]
-            poids[original_key]["ecart_type_estimation"] = np.sqrt(var_Xbeta_constrained[index])
+            poids[original_key]["scale"] = np.sqrt(var_Xbeta_constrained[index])
         index += nb
     return poids
 
@@ -427,7 +499,7 @@ def sys_budget_dp(budget_rho, nb_modalite, poids):
     total = sum(poids.values())
     poids = {k: v / total for k, v in poids.items()}
     poids_set = {
-        frozenset() if k == 'Total' else frozenset([k]) if isinstance(k, str) else frozenset(k): v
+        frozenset() if k == 'Aucun' else frozenset([k]) if isinstance(k, str) else frozenset(k): v
         for k, v in poids.items()
     }
     subsets = [s for s in poids_set.keys()]
@@ -603,7 +675,7 @@ def organiser_par_by(dico_requetes, dico_poids):
     # Première passe : création des entrées avec poids brut
     for req, params in dico_requetes.items():
         if 'by' not in params:
-            key = 'Total'
+            key = 'Aucun'
         else:
             by = params['by']
             if isinstance(by, str):
@@ -611,7 +683,7 @@ def organiser_par_by(dico_requetes, dico_poids):
             elif isinstance(by, list):
                 key = by[0] if len(by) == 1 else tuple(by)
             else:
-                key = 'Total'
+                key = 'Aucun'
 
         if req in dico_poids:
             value = {"req": req, "poids": dico_poids[req]}

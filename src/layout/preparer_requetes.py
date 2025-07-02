@@ -43,7 +43,7 @@ def bloc_ajout_requete():
             "input.type_req == 'Quantile'",
             ui.row(
                 ui.column(3, ui.input_numeric("alpha", "Ordre du quantile:", 0.5, min=0, max=1, step=0.01)),
-                ui.column(3, ui.input_text("nb_candidat", "Nombre de candidats:"))
+                ui.column(3, ui.input_text("nb_candidats", "Nombre de candidats:"))
             ),
         ),
         ui.br(),
