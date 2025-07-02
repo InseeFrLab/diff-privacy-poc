@@ -2,7 +2,7 @@
 from src.plots import (
     create_histo_plot, create_fc_emp_plot,
     create_score_plot, create_proba_plot,
-    create_barplot, create_grouped_barplot_cv,
+    create_barplot,
     plot_subset_tree
 )
 from src.layout.fonction_layout import (
@@ -17,7 +17,7 @@ from src.layout.conception_budget import page_conception_budget
 from src.layout.resultat_dp import page_resultat_dp
 from src.layout.etat_budget_dataset import page_etat_budget_dataset
 from src.process_tools import (
-    process_request, process_request_dp, calculer_toutes_les_requetes
+    process_request, calculer_toutes_les_requetes
 )
 from src.fonctions import (
     eps_from_rho_delta, optimization_boosted,
@@ -81,15 +81,75 @@ def server(input, output, session):
     trigger_update_budget = reactive.Value(0)
 
     @reactive.Calc
+    def query():
+        data_requetes = requetes()
+        req_non_moyenne = {k: v for k, v in data_requetes.items() if v["type"].lower() not in ["moyenne", "mean"]}
+        req_moyenne = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["moyenne", "mean"]}
+        query = {}
+        i = 1
+        for (key, request) in req_non_moyenne.items():
+            query_request = request.copy()
+            query_request["req"] = [key]
+            cle = f"query_{i}"
+            query[cle] = query_request
+            i += 1
+
+        for (key, request) in req_moyenne.items():
+            query_request = request.copy()
+
+            # Cas 1 : Total
+            query_request["type"] = "Total"
+
+            # Chercher s'il existe une requête identique dans query, en ignorant "req"
+            found = False
+            for k, v in query.items():
+                v_without_req = {kk: vv for kk, vv in v.items() if kk != "req"}
+                if v_without_req == query_request:
+                    query[k]["req"].append(key)
+                    found = True
+                    break
+
+            # Si aucune requête équivalente n'a été trouvée, on ajoute une nouvelle entrée
+            if not found:
+                query_request["req"] = [key]
+                cle = f"query_{i}"
+                query[cle] = query_request
+                i += 1
+
+            # Cas 2 : Comptage
+            query_request["type"] = "Comptage"
+            query_request.pop("variable", None)
+            query_request.pop("bounds", None)
+            query_request.pop("req", None)
+
+            # Chercher s'il existe une requête identique dans query, en ignorant "req"
+            found = False
+            for k, v in query.items():
+                v_without_req = {kk: vv for kk, vv in v.items() if kk != "req"}
+                if v_without_req == query_request:
+                    query[k]["req"].append(key)
+                    found = True
+                    break
+
+            # Si aucune requête équivalente n'a été trouvée, on ajoute une nouvelle entrée
+            if not found:
+                query_request["req"] = [key]
+                cle = f"query_{i}"
+                query[cle] = query_request
+                i += 1
+
+        return query
+
+
+    @reactive.Calc
     def get_poids():
         return get_weights(requetes(), input)
 
     @reactive.Calc
     def conception_req_count():
-
         data_requetes = requetes()
         poids_req = get_poids()
-
+        print(query())
         req_comptage = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["count", "comptage"]}
         req_comptage_croisement = organiser_par_by(req_comptage, poids_req)
         budget_comptage = input.budget_total() * sum(croisement["poids"] for croisement in req_comptage_croisement.values())
@@ -138,7 +198,6 @@ def server(input, output, session):
 
         data_requetes = requetes()
         poids_req = get_poids()
-        print(6000/np.sqrt(2*0.069))
 
         req_total = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["total", "sum", "somme"]}
         req_total_croisement_par_variable = {}
@@ -280,9 +339,7 @@ def server(input, output, session):
                     count = row_biaise.get("count", 1)
 
                     cv_total = request['scale_total'] / total if total != 0 else float("inf")
-                    print(cv_total)
                     cv_count = request['scale_comptage'] / count if count != 0 else float("inf")
-                    print(cv_count)
                     cv = 100 * np.sqrt(cv_total**2 + cv_count**2)
 
                     biais = (total - total_non_biaise) / count
@@ -533,12 +590,12 @@ def server(input, output, session):
 
     @reactive.Effect
     def update_variable_choices():
+        ui.update_selectize("group_by", choices=variable_choices())
         if input.type_req() == "Comptage":
             ui.update_selectize("variable", choices={})  # pas de choix possible
         else:
             # Met à jour dynamiquement les choix de la selectize input
             ui.update_selectize("variable", choices=variable_choices())
-            ui.update_selectize("group_by", choices=variable_choices())
 
     # Lecture du json contenant les requêtes
     @reactive.effect
@@ -574,7 +631,6 @@ def server(input, output, session):
 
         variable = input.variable()
         bounds = None
-
         # Essayer de récupérer min/max dans YAML pour la variable choisie
         if 'columns' in metadata_dict and variable in metadata_dict['columns']:
             col_meta = metadata_dict['columns'][variable]
@@ -674,10 +730,6 @@ def server(input, output, session):
         if not data_requetes:
             return ui.p("Aucune requête chargée.")
         return affichage_requete(data_requetes, dataset())
-
-
-
-
 
 
     # Page 3 ----------------------------------

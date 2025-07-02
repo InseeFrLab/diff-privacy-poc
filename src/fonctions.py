@@ -118,8 +118,6 @@ def generate_yaml_metadata_from_lazyframe_as_string(df: pl.DataFrame, dataset_na
                      pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
                      pl.Float32, pl.Float64):
             col_meta.update({
-                'mean': round(float(series.mean()), 2),
-                'std': round(float(series.std()), 2),
                 'min': round(float(series.min()), 2),
                 'max': round(float(series.max()), 2)
             })
