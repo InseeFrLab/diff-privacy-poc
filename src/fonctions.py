@@ -134,8 +134,8 @@ def generate_yaml_metadata_from_lazyframe_as_string(df: pl.DataFrame, dataset_na
 def optimization_boosted(budget_rho, nb_modalite, poids):
 
     poids_set = {
-        frozenset() if k == 'Aucun' else frozenset([k]) if isinstance(k, str) else frozenset(k): v["poids_normalise"]
-        for k, v in poids.items()
+        frozenset() if v['groupement'] == 'Aucun' else frozenset([v['groupement']]) if isinstance(v['groupement'], str) else frozenset(v['groupement']): v["poids_normalise"]
+        for v in poids.values()
     }
     liste_request = [s for s in poids_set.keys()]
 
@@ -163,8 +163,6 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
     # Affichage
     print("Tous les frozensets :", liste_request)
     print("Feuilles :", feuilles)
-    print("Nombre de colonnes de X: p =", p)
-    print("Nombre de lignes de X: n =", n)
 
     # 6. Génération des noms des bêtas
     beta_names = [f"beta_{i+1}" for i in range(p)]
@@ -257,7 +255,7 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
 
             row = np.zeros(len(beta_names))
             for b in betas1:
-                row[beta_names.index(b)] =  1
+                row[beta_names.index(b)] = 1
             for b in betas2:
                 row[beta_names.index(b)] -= 1
             R_rows.append(row)
@@ -272,9 +270,6 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
     # Finalisation
     R = np.vstack(R_rows) if R_rows else np.empty((0, len(beta_names)))
     R = remove_dependent_rows_qr(R)
-    print("R.shape =", R.shape)
-    print("R (matrice des contraintes):")
-    print(R)
 
     import itertools
 
@@ -304,10 +299,9 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
     index = 0
     # Création du mapping entre frozenset (clé dans dict_request) et la clé d'origine de poids
     fs_to_key = {
-        frozenset() if k == 'Aucun' else frozenset([k]) if isinstance(k, str) else frozenset(k): k
-        for k in poids
+        frozenset() if v['groupement'] == 'Aucun' else frozenset([v['groupement']]) if isinstance(v['groupement'], str) else frozenset(v['groupement']): k
+        for k, v in poids.items()
     }
-    print(var_Xbeta_constrained)
     for fset in dict_request:
         nb = dict_request[fset]["nb_cellule"]
         if fset in fs_to_key:
@@ -671,21 +665,30 @@ def organiser_par_by(dico_requetes, dico_poids):
     lien_croisement_req = defaultdict(dict)
 
     # Première passe : création des entrées avec poids brut
-    for req, params in dico_requetes.items():
+    for query, params in dico_requetes.items():
         if 'by' not in params:
-            key = 'Aucun'
+            groupement = 'Aucun'
         else:
             by = params['by']
             if isinstance(by, str):
-                key = by
+                groupement = by
             elif isinstance(by, list):
-                key = by[0] if len(by) == 1 else tuple(by)
+                groupement = by[0] if len(by) == 1 else tuple(by)
             else:
-                key = 'Aucun'
+                groupement = 'Aucun'
 
-        if req in dico_poids:
-            value = {"req": req, "poids": dico_poids[req]}
-            lien_croisement_req[key] = value
+        # Récupération des noms de requêtes associés
+        reqs = params.get('req', [])
+
+        # Calcul du poids total
+        poids_total = sum(dico_poids.get(r, 0) for r in reqs)
+
+        # Ajout à la structure finale
+        lien_croisement_req[query] = {
+            "groupement": groupement,
+            "req": reqs,
+            "poids": poids_total
+        }
 
     # Deuxième passe : calcul des poids normalisés
     total_poids = sum(v["poids"] for v in lien_croisement_req.values())
@@ -700,12 +703,22 @@ def organiser_par_by(dico_requetes, dico_poids):
 
 
 def get_weights(request, input) -> dict:
+    # Étape 1 : récupération des poids bruts
     raw_weights = {
         key: radio_to_weight.get(float(getattr(input, key)()), 0)
-        for key, requete in request.items()
+        for key in request
     }
+
+    # Étape 2 : normalisation initiale
     total = sum(raw_weights.values())
-    return {k: v / total for k, v in raw_weights.items()}
+    weights = {k: v / total for k, v in raw_weights.items()} if total > 0 else {k: 0 for k in raw_weights}
+
+    # Étape 3 : division par 2 des poids de type "Moyenne"
+    for k in weights:
+        if request[k].get("type") == "Moyenne":
+            weights[k] /= 2
+
+    return weights
 
 
 def load_data(path: str, storage_options):
