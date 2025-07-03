@@ -10,7 +10,7 @@ from shiny import ui
 # Fonctions pour du layout ----------------------------------
 
 
-def afficher_resultats(results_store, requetes, poids_estimateur, poids_estimateur_tot, lien_comptage_req, lien_total_req_dict):
+def afficher_resultats(results_store, requetes, query):
     current_results = results_store()
     panels = []
     final_results = {}

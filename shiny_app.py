@@ -519,16 +519,10 @@ def server(input, output, session):
                 "margins": [dp.polars.Margin(max_partition_length=70_000_000)],
             }
 
-            budget_comptage = sum(poids_requetes_comptage) * input.budget_total()
+            context_rho, context_eps = update_context(context_param, input.budget_total(), data_query)
+            await calculer_toutes_les_requetes(context_rho, context_eps, key_values(), data_query, p, resultats_df, dataset())
 
-            budget_totaux = sum(poids_requetes_total) * input.budget_total()
-
-            context_comptage, context_tot, context_moy, context_quantile = update_context(
-                context_param, input.budget_total(), budget_comptage, budget_totaux, poids_rho_req_comptage, poids_rho_req_total, poids_requetes_moyenne, poids_requetes_quantile
-            )
-            await calculer_toutes_les_requetes(context_comptage, context_tot, context_moy, context_quantile, key_values(), data_requetes, p, resultats_df, dataset(), rho_req_comptage, rho_req_total_dict)
-
-        return afficher_resultats(resultats_df, requetes(), poids_estimateur, poids_estimateur_dict, lien_comptage_req, lien_total_req_dict)
+        return afficher_resultats(resultats_df, requetes(), data_query)
 
 
     # Page 1 ----------------------------------

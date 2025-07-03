@@ -6,25 +6,15 @@ import polars as pl
 import asyncio
 
 
-async def calculer_toutes_les_requetes(context_comptage, context_total, context_moyenne, context_quantile, key_values, requetes, progress, results_store, dataset, rho_req_comptage, rho_req_total_dict):
+async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, query, progress, results_store, dataset):
     current_results = {}
     df = dataset.lazy()
 
-    for i, (key, req) in enumerate(requetes.items(), start=1):
+    for i, (key, req) in enumerate(query.items(), start=1):
         progress.set(i, message=f"Requête {key} — {req.get('type', '—')}", detail="Calcul en cours...")
         await asyncio.sleep(0.05)
 
-        if req.get("type") == "Comptage":
-            if key not in rho_req_comptage:
-                current_results[key] = None
-                continue
-
-        if req.get("type") == "Total":
-            if not any(key in subdict for subdict in rho_req_total_dict.values()):
-                current_results[key] = None
-                continue
-
-        resultat_dp = process_request_dp(context_comptage, context_total, context_moyenne, context_quantile, key_values, req).execute()
+        resultat_dp = process_request_dp(context_rho, context_eps, key_values, req).execute()
         df_result = resultat_dp.release().collect()
 
         if req.get("type") == "Moyenne":
@@ -58,7 +48,7 @@ async def calculer_toutes_les_requetes(context_comptage, context_total, context_
     results_store.set(current_results)
 
 
-def process_request_dp(context_comptage, context_total, context_moyenne, context_quantile, key_values, req):
+def process_request_dp(context_rho, context_eps, key_values, req):
 
     variable = req.get("variable")
     by = req.get("by")
@@ -69,14 +59,10 @@ def process_request_dp(context_comptage, context_total, context_moyenne, context
     type_req = req["type"]
 
     mapping = {
-            "count": lambda: count_dp(context_comptage, key_values, by=by, variable=None, filtre=filtre),
-            "mean": lambda: mean_dp(context_moyenne, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre),
-            "sum": lambda: sum_dp(context_total, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre),
-            "quantile": lambda: quantile_dp(context_quantile, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre, alpha=alpha, candidats=candidats),
-            "Comptage": lambda: count_dp(context_comptage, key_values, by=by, variable=None, filtre=filtre),
-            "Moyenne": lambda: mean_dp(context_moyenne, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre),
-            "Total": lambda: sum_dp(context_total, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre),
-            "Quantile": lambda: quantile_dp(context_quantile, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre, alpha=alpha, candidats=candidats)
+            "Comptage": lambda: count_dp(context_rho, key_values, by=by, variable=None, filtre=filtre),
+            "Moyenne": lambda: mean_dp(context_rho, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre),
+            "Total": lambda: sum_dp(context_rho, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre),
+            "Quantile": lambda: quantile_dp(context_eps, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre, alpha=alpha, candidats=candidats)
         }
 
     if type_req not in mapping:

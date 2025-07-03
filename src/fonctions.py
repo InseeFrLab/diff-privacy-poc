@@ -11,8 +11,9 @@ from src.constant import (
 import yaml
 import operator
 from itertools import combinations, product
+import itertools
 from functools import reduce
-
+import cvxpy as cp
 
 # Map des opérateurs Python vers leurs fonctions correspondantes
 OPS = {
@@ -131,34 +132,22 @@ def generate_yaml_metadata_from_lazyframe_as_string(df: pl.DataFrame, dataset_na
     return yaml_str
 
 
-def optimization_boosted(budget_rho, nb_modalite, poids):
+# Calcul de p
+def produit_modalites(fset, nb_modalite):
+    if not fset:
+        return 1
+    return reduce(operator.mul, (nb_modalite[v] for v in fset), 1)
 
-    poids_set = {
-        frozenset() if v['groupement'] == 'Aucun' else frozenset([v['groupement']]) if isinstance(v['groupement'], str) else frozenset(v['groupement']): v["poids_normalise"]
-        for v in poids.values()
-    }
-    liste_request = [s for s in poids_set.keys()]
 
+def MCG(liste_request, nb_modalite):
     # Trouver les feuilles (non inclus dans d'autres strictement plus grands)
     feuilles = [
         req for req in liste_request
         if not any((req < other) for other in liste_request)
     ]
 
-    non_feuilles = [req for req in liste_request if req not in feuilles]
-    liste_request = (
-        sorted(feuilles, key=lambda x: -len(x)) +
-        sorted(non_feuilles, key=lambda x: -len(x))
-    )
-
-    # Calcul de p
-    def produit_modalites(fset):
-        if not fset:
-            return 1
-        return reduce(operator.mul, (nb_modalite[v] for v in fset), 1)
-
-    p = sum(produit_modalites(fset) for fset in feuilles)
-    n = sum(produit_modalites(fset) for fset in liste_request)
+    p = sum(produit_modalites(fset, nb_modalite) for fset in feuilles)
+    n = sum(produit_modalites(fset, nb_modalite) for fset in liste_request)
 
     # Affichage
     print("Tous les frozensets :", liste_request)
@@ -189,16 +178,9 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
     # 8. Construction de la matrice X (n x p)
     X = np.zeros((n, p), dtype=int)
 
-    # 8.1 Première partie : identité pour les lignes correspondant aux β
-    for i in range(p):
-        X[i, i] = 1
-
     # 8.2 Reste : combinaisons/group_by
-    ligne_courante = p  # on commence après les p premières lignes
+    ligne_courante = 0
     for req in liste_request:
-        if req in feuilles:
-            continue  # déjà traité via identité
-
         # Chercher un maximal qui contient la requête
         for max_req in feuilles:
             if req <= max_req:
@@ -270,10 +252,176 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
     # Finalisation
     R = np.vstack(R_rows) if R_rows else np.empty((0, len(beta_names)))
     R = remove_dependent_rows_qr(R)
+    return X, R
 
-    import itertools
+def MCG(liste_request, nb_modalite):
+    # Trouver les feuilles
+    feuilles = [req for req in liste_request if not any((req < other) for other in liste_request)]
 
-    dict_request = {fset: {"nb_cellule": produit_modalites(fset), "sigma2": 1/(2*budget_rho*poids_set[fset])} for fset in liste_request}
+    p = sum(produit_modalites(fset, nb_modalite) for fset in feuilles)
+    n = sum(produit_modalites(fset, nb_modalite) for fset in liste_request)
+
+    print("Tous les frozensets :", liste_request)
+    print("Feuilles :", feuilles)
+
+    # Table de correspondance beta
+    beta_names = []
+    df_par_requete = {}
+
+    def beta_label(var_names, values):
+        return "β[" + ", ".join(f"{v}={val}" for v, val in zip(var_names, values)) + "]"
+
+    for req in feuilles:
+        sorted_vars = sorted(req)
+        domains = [range(nb_modalite[v]) for v in sorted_vars]
+        combinations_vals = list(product(*domains))
+
+        betas = [beta_label(sorted_vars, vals) for vals in combinations_vals]
+        beta_names.extend(betas)
+
+        df = pd.DataFrame(combinations_vals, columns=sorted_vars)
+        df["value"] = betas
+        df_par_requete[req] = df
+
+    # Matrice X (DataFrame annoté)
+    X = np.zeros((n, p), dtype=int)
+    ligne_courante = 0
+    request_lines = []
+
+    for req in liste_request:
+        for max_req in feuilles:
+            if req <= max_req:
+                df = df_par_requete[max_req].copy()
+                if len(req) > 0:
+                    grouped = df.groupby(sorted(req))["value"].apply(lambda x: ' + '.join(x)).reset_index()
+                else:
+                    grouped = pd.DataFrame({'value': [' + '.join(df["value"])]})
+
+                for _, row in grouped.iterrows():
+                    beta_sum = row["value"]
+                    for b in beta_sum.split(" + "):
+                        j = beta_names.index(b)
+                        X[ligne_courante, j] = 1
+                    if len(req) > 0:
+                        dico_modalites = row[sorted(req)].to_dict()
+                    else:
+                        dico_modalites = {}
+                    request_lines.append({"requête": req, **dico_modalites})
+                    ligne_courante += 1
+                break
+
+    X_df_infos = pd.DataFrame(request_lines)
+
+    # Matrice R
+    R_rows = []
+
+    for req1, req2 in combinations(feuilles, 2):
+        intersection = req1 & req2
+        df1 = df_par_requete[req1]
+        df2 = df_par_requete[req2]
+
+        if not intersection:
+            betas1 = df1["value"].tolist()
+            betas2 = df2["value"].tolist()
+
+            row = np.zeros(len(beta_names))
+            for b in betas1:
+                row[beta_names.index(b)] = 1
+            for b in betas2:
+                row[beta_names.index(b)] -= 1
+            R_rows.append(row)
+            continue
+
+        grouped1 = df1.groupby(list(intersection))["value"].apply(list)
+        grouped2 = df2.groupby(list(intersection))["value"].apply(list)
+        common_modalities = grouped1.index.intersection(grouped2.index)
+
+        for modality in common_modalities:
+            betas1 = grouped1[modality]
+            betas2 = grouped2[modality]
+            row = np.zeros(len(beta_names))
+            for b in betas1:
+                row[beta_names.index(b)] = 1
+            for b in betas2:
+                row[beta_names.index(b)] -= 1
+            R_rows.append(row)
+
+    def remove_dependent_rows_qr(R, tol=1e-10):
+        if R.shape[0] == 0:
+            return R
+        Q, R_qr = np.linalg.qr(R.T)
+        independent = np.abs(R_qr).sum(axis=1) > tol
+        return R[independent]
+
+    R = np.vstack(R_rows) if R_rows else np.empty((0, len(beta_names)))
+    R = remove_dependent_rows_qr(R)
+
+    return X, R, X_df_infos
+
+
+
+def calcul_MCG(results_store, nb_modalite, poids):
+
+    poids_set = {
+        frozenset() if v['groupement'] == 'Aucun' else frozenset([v['groupement']]) if isinstance(v['groupement'], str) else frozenset(v['groupement']): v["poids_normalise"]
+        for v in poids.values()
+    }
+
+    liste_request = [s for s in poids_set.keys()]
+
+    X, R, X_df_infos = MCG(liste_request, nb_modalite)
+
+    n, p = X.shape
+
+    dict_request = {fset: {"nb_cellule": produit_modalites(fset, nb_modalite), "sigma2": 1/(2*budget_rho*poids_set[fset])} for fset in liste_request}
+
+    # Matrice de variance Omega (hétéroscédastique)
+    sigma2 = np.array(list(itertools.chain.from_iterable(
+        [v["sigma2"]] * v["nb_cellule"] for v in dict_request.values()
+    )))
+
+    Y = np.array([20, 12, 23, 10, 7, 9, 13, 21, 23, 24, 25, 20, 20, 27, 59])
+    sigma2 = np.linspace(5, 20, n)
+    Omega_inv = np.diag(1 / sigma2)
+
+    # Variables
+    beta = cp.Variable(p)
+
+    # Objectif : moindres carrés pondérés
+    objective = cp.Minimize(cp.quad_form(Y - X @ beta, Omega_inv))
+
+    # Contraintes
+    constraints = [
+        R @ beta == 0,
+        beta >= 0
+    ]
+
+    # Problème
+    problem = cp.Problem(objective, constraints)
+    problem.solve()
+    print("status:", problem.status)
+    X_beta = X @ beta.value
+    X_beta_rounded = np.round(X_beta).astype(int)
+    print("X*beta estimé :", X_beta)
+    print("X*beta estimé rounded :", X_beta_rounded)
+
+    return X_beta_rounded
+
+
+def optimization_boosted(budget_rho, nb_modalite, poids):
+
+    poids_set = {
+        frozenset() if v['groupement'] == 'Aucun' else frozenset([v['groupement']]) if isinstance(v['groupement'], str) else frozenset(v['groupement']): v["poids_normalise"]
+        for v in poids.values()
+    }
+    liste_request = [s for s in poids_set.keys()]
+
+    X, R, X_df_infos = MCG(liste_request, nb_modalite)
+    print(X)
+
+    print(X_df_infos)
+
+    dict_request = {fset: {"nb_cellule": produit_modalites(fset, nb_modalite), "sigma2": 1/(2*budget_rho*poids_set[fset])} for fset in liste_request}
     # Matrice de variance Omega (hétéroscédastique)
     sigma2 = np.array(list(itertools.chain.from_iterable(
         [v["sigma2"]] * v["nb_cellule"] for v in dict_request.values()
@@ -415,47 +563,32 @@ def ameliorer_comptage(key, df_result, poids_estimateur, results_store, lien_com
     return df_result_base
 
 
-def update_context(CONTEXT_PARAM, budget, budget_comptage, budget_totaux, poids_requetes_comptage, poids_requetes_total, poids_requetes_moyenne, poids_requetes_quantile):
+def update_context(CONTEXT_PARAM, budget, requete):
 
-    budget_moyenne = budget * sum(poids_requetes_moyenne)
-    budget_quantile = np.sqrt(8 * budget * sum(poids_requetes_quantile))
+    poids_req_rho = [req["poids"] for req in requete.values() if req["type"].lower() != "quantile"]
+    poids_req_eps = 1 - poids_req_rho
+    budget_rho = budget * sum(poids_req_rho)
+    budget_eps = np.sqrt(8 * budget * sum(poids_req_eps))
 
-    if budget_comptage == 0:
-        context_comptage = None
+    if budget_rho == 0:
+        context_rho = None
     else:
-        context_comptage = dp.Context.compositor(
+        context_rho = dp.Context.compositor(
             **CONTEXT_PARAM,
-            privacy_loss=dp.loss_of(rho=budget_comptage),
-            split_by_weights=poids_requetes_comptage
+            privacy_loss=dp.loss_of(rho=budget_rho),
+            split_by_weights=poids_req_rho
         )
 
-    if budget_totaux == 0:
-        context_total = None
+    if budget_eps == 0:
+        context_eps = None
     else:
-        context_total = dp.Context.compositor(
+        context_eps = dp.Context.compositor(
             **CONTEXT_PARAM,
-            privacy_loss=dp.loss_of(rho=budget_totaux),
-            split_by_weights=poids_requetes_total
+            privacy_loss=dp.loss_of(epsilon=budget_eps),
+            split_by_weights=poids_req_eps
         )
 
-    if budget_moyenne == 0:
-        context_moyenne = None
-    else:
-        context_moyenne = dp.Context.compositor(
-            **CONTEXT_PARAM,
-            privacy_loss=dp.loss_of(rho=budget_moyenne),
-            split_by_weights=poids_requetes_moyenne
-        )
-    if budget_quantile == 0:
-        context_quantile = None
-    else:
-        context_quantile = dp.Context.compositor(
-            **CONTEXT_PARAM,
-            privacy_loss=dp.loss_of(epsilon=budget_quantile),
-            split_by_weights=poids_requetes_quantile
-        )
-
-    return context_comptage, context_total, context_moyenne, context_quantile
+    return context_rho, context_eps
 
 
 # Fonction pour forcer une variable à 0 en modifiant A et b
