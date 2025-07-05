@@ -2,27 +2,81 @@ from src.process_tools import (
     process_request
 )
 from src.fonctions import (
-    ameliorer_comptage, ameliorer_total
+    calcul_MCG
 )
 from shiny import ui
-
+import numpy as np
+import pandas as pd
 
 # Fonctions pour du layout ----------------------------------
 
 
-def afficher_resultats(results_store, requetes, query):
+def afficher_resultats(results_store, requetes, data_query, modalite):
     current_results = results_store()
     panels = []
     final_results = {}
+
+    query_comptage = {k: v for k, v in data_query.items() if v["type"].lower() in ["count", "comptage"]}
+    results_comptage = {k: v for k, v in current_results.items() if k in query_comptage.keys()}
+    results_comptage = calcul_MCG(results_comptage, modalite, query_comptage, "count")
+
+    query_total = {k: v for k, v in data_query.items() if v["type"].lower() in ["sum", "total"]}
+    results_total_par_variable = {}
+    variables_uniques = set(v["variable"] for v in query_total.values())
+    for variable in variables_uniques:
+        query_total_variable = {
+                k: v for k, v in query_total.items()
+                if v["variable"] == variable
+            }
+
+        results_total_variable = {k: v for k, v in current_results.items() if k in query_total_variable.keys()}
+        results_total_variable = calcul_MCG(results_total_variable, modalite, query_total_variable, "sum")
+        results_total_par_variable[variable] = results_total_variable
+
     for key, req in requetes.items():
-        df_result = current_results[key]
 
-        # 👉 Ici tu peux effectuer un traitement global sur plusieurs df si nécessaire
-        if req.get("type") == "Comptage":
-            df_result = ameliorer_comptage(key, df_result, poids_estimateur, results_store(), lien_comptage_req)
+        if req["type"] == "Moyenne":
+            key_query_comptage = next(
+                (k for k, v in data_query.items() if key in v["req"] and v["type"] == "Comptage"),
+                None  # valeur par défaut si rien n'est trouvé
+            )
+            key_query_total = next(
+                (k for k, v in data_query.items() if key in v["req"] and v["type"] == "Total"),
+                None
+            )
+            variable = req["variable"]
 
-        if req.get("type") == "Total":
-            df_result = ameliorer_total(key, req, df_result, poids_estimateur_tot, results_store(), lien_total_req_dict)
+            df_result_comptage = results_comptage[key_query_comptage]
+            df_result_total = results_total_par_variable[variable][key_query_total]
+
+            # On concatène horizontalement sur l’index (corrigé)
+            df_result = pd.concat(
+                [df_result_total.reset_index(drop=True),
+                df_result_comptage.reset_index(drop=True)],
+                axis=1
+            )
+
+            # Supprimer les colonnes en doublon éventuelles
+            df_result = df_result.loc[:, ~df_result.columns.duplicated()]
+
+            # Calcul de la moyenne
+            df_result["mean"] = df_result.apply(
+                lambda row: np.inf if row["count"] == 0 else row["sum"] / row["count"],
+                axis=1
+            )
+
+        else:
+            key_query = next((k for k, v in data_query.items() if key in v["req"]), None)
+
+            if req["type"] == "Comptage":
+                df_result = results_comptage[key_query]
+
+            if req["type"] == "Total":
+                variable = req["variable"]
+                df_result = results_total_par_variable[variable][key_query]
+
+            if req["type"] == "Quantile":
+                df_result = current_results[key_query]
 
         final_results[key] = df_result
 
@@ -49,7 +103,7 @@ def afficher_resultats(results_store, requetes, query):
         )
 
         panels.append(
-            ui.accordion_panel(f"{key} — {req.get('type', '—')}", content_row)
+            ui.accordion_panel(f"{key} — {req.get('type', '—')}", content_row, open=True)
         )
 
     results_store.set(final_results)
@@ -171,7 +225,7 @@ def affichage_requete(requetes, dataset):
 
         # Panneau d'accordéon contenant la ligne
         panels.append(
-            ui.accordion_panel(f"{key} — {req.get('type', '—')}", content_row)
+            ui.accordion_panel(f"{key} — {req.get('type', '—')}", content_row, open=True)
         )
 
     return ui.accordion(*panels)

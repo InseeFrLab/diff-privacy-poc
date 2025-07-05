@@ -4,7 +4,6 @@ import polars as pl
 import pandas as pd
 from scipy.optimize import fsolve
 import opendp.prelude as dp
-from collections import defaultdict
 from src.constant import (
     radio_to_weight
 )
@@ -139,130 +138,14 @@ def produit_modalites(fset, nb_modalite):
     return reduce(operator.mul, (nb_modalite[v] for v in fset), 1)
 
 
-def MCG(liste_request, nb_modalite):
-    # Trouver les feuilles (non inclus dans d'autres strictement plus grands)
-    feuilles = [
-        req for req in liste_request
-        if not any((req < other) for other in liste_request)
-    ]
-
-    p = sum(produit_modalites(fset, nb_modalite) for fset in feuilles)
-    n = sum(produit_modalites(fset, nb_modalite) for fset in liste_request)
-
-    # Affichage
-    print("Tous les frozensets :", liste_request)
-    print("Feuilles :", feuilles)
-
-    # 6. Génération des noms des bêtas
-    beta_names = [f"beta_{i+1}" for i in range(p)]
-
-    # 7. Construction des DataFrames pour chaque requête maximale
-    df_par_requete = {}
-    compteur = 0
-
-    for req in feuilles:
-        sorted_vars = sorted(req)
-        domains = [range(nb_modalite[v]) for v in sorted_vars]
-        combinations_vals = list(product(*domains))  # toutes les combinaisons pour cette requête
-        nb = len(combinations_vals)
-
-        # Associer les bonnes bêtas
-        betas = beta_names[compteur:compteur + nb]
-        compteur += nb
-
-        # Construire le DataFrame
-        df = pd.DataFrame(combinations_vals, columns=sorted_vars)
-        df["value"] = betas
-        df_par_requete[req] = df
-
-    # 8. Construction de la matrice X (n x p)
-    X = np.zeros((n, p), dtype=int)
-
-    # 8.2 Reste : combinaisons/group_by
-    ligne_courante = 0
-    for req in liste_request:
-        # Chercher un maximal qui contient la requête
-        for max_req in feuilles:
-            if req <= max_req:
-                df = df_par_requete[max_req].copy()
-                # groupby + concaténation des strings de valeurs
-                if len(req) > 0:
-                    grouped = df.groupby(sorted(req))["value"].apply(lambda x: ' + '.join(x)).reset_index()
-                else:
-                    # cas du total : groupby sur rien → tout sommer
-                    grouped = pd.DataFrame({'value': [' + '.join(df["value"])]})
-
-                for _, row in grouped.iterrows():
-                    beta_sum = row["value"]
-                    for b in beta_sum.split(" + "):
-                        j = beta_names.index(b)
-                        X[ligne_courante, j] = 1
-                    ligne_courante += 1
-                break
-
-    # 10. R
-    R_rows = []
-
-    # On parcourt toutes les paires de requêtes maximales
-    for req1, req2 in combinations(feuilles, 2):
-        intersection = req1 & req2
-        df1 = df_par_requete[req1]
-        df2 = df_par_requete[req2]
-
-        if not intersection:
-            # Cas particulier : contrainte sur le total global (somme de toutes les cellules)
-            betas1 = df1["value"].tolist()
-            betas2 = df2["value"].tolist()
-
-            row = np.zeros(len(beta_names))
-            for b in betas1:
-                row[beta_names.index(b)] = 1
-            for b in betas2:
-                row[beta_names.index(b)] -= 1
-            R_rows.append(row)
-            continue
-
-        # Regrouper par les variables communes (intersection)
-        grouped1 = df1.groupby(list(intersection))["value"].apply(list)
-        grouped2 = df2.groupby(list(intersection))["value"].apply(list)
-
-        # On parcourt les modalités communes aux deux tables
-        common_modalities = grouped1.index.intersection(grouped2.index)
-
-        modalities = list(common_modalities)
-
-        for modality in modalities:
-            betas1 = grouped1[modality]
-            betas2 = grouped2[modality]
-
-            row = np.zeros(len(beta_names))
-            for b in betas1:
-                row[beta_names.index(b)] = 1
-            for b in betas2:
-                row[beta_names.index(b)] -= 1
-            R_rows.append(row)
-
-    def remove_dependent_rows_qr(R, tol=1e-10):
-        if R.shape[0] == 0:
-            return R
-        Q, R_qr = np.linalg.qr(R.T)  # QR sur les colonnes revient à détecter les lignes dépendantes
-        independent = np.abs(R_qr).sum(axis=1) > tol
-        return R[independent]
-
-    # Finalisation
-    R = np.vstack(R_rows) if R_rows else np.empty((0, len(beta_names)))
-    R = remove_dependent_rows_qr(R)
-    return X, R
-
-def MCG(liste_request, nb_modalite):
+def MCG(liste_request, modalite):
     # Trouver les feuilles
     feuilles = [req for req in liste_request if not any((req < other) for other in liste_request)]
 
+    nb_modalite = {k: len(v) for k, v in modalite.items()}
+
     p = sum(produit_modalites(fset, nb_modalite) for fset in feuilles)
     n = sum(produit_modalites(fset, nb_modalite) for fset in liste_request)
-
-    print("Tous les frozensets :", liste_request)
-    print("Feuilles :", feuilles)
 
     # Table de correspondance beta
     beta_names = []
@@ -304,9 +187,15 @@ def MCG(liste_request, nb_modalite):
                         X[ligne_courante, j] = 1
                     if len(req) > 0:
                         dico_modalites = row[sorted(req)].to_dict()
+                        dico_modalites_nom = {
+                            var: modalite[var][val] if pd.notna(val) else None
+                            for var, val in dico_modalites.items()
+                        }
                     else:
-                        dico_modalites = {}
-                    request_lines.append({"requête": req, **dico_modalites})
+                        dico_modalites_nom = {}
+
+                    request_lines.append({"requête": req, **dico_modalites_nom})
+
                     ligne_courante += 1
                 break
 
@@ -359,69 +248,144 @@ def MCG(liste_request, nb_modalite):
     return X, R, X_df_infos
 
 
+def ajouter_colonne_value(x_df_info, data_query, results_store):
+    x_df_info = x_df_info.copy()
+    x_df_info["value"] = np.nan
+    x_df_info["sigma2"] = np.nan
 
-def calcul_MCG(results_store, nb_modalite, poids):
+    for key, df_valeurs in results_store.items():
 
-    poids_set = {
-        frozenset() if v['groupement'] == 'Aucun' else frozenset([v['groupement']]) if isinstance(v['groupement'], str) else frozenset(v['groupement']): v["poids_normalise"]
-        for v in poids.values()
-    }
+        groupement = data_query[key]["groupement"]
 
-    liste_request = [s for s in poids_set.keys()]
+        # Détecter automatiquement la colonne de valeur
+        possible_value_cols = ['count', 'sum', 'value']
+        valeur_col = next((col for col in possible_value_cols if col in df_valeurs.columns), None)
+        if valeur_col is None:
+            raise ValueError(f"Aucune colonne de valeur trouvée dans {key}")
 
-    X, R, X_df_infos = MCG(liste_request, nb_modalite)
+        # Filtrage de x_df_info pour le groupement
+        masque = x_df_info["requête"] == groupement
+
+        if not any(masque):
+            continue
+
+        sous_df = x_df_info[masque].copy()
+
+        if len(groupement) == 0:
+            # Cas sans groupement : valeur unique
+            if len(df_valeurs) != 1:
+                raise ValueError(f"Le résultat pour '{key}' sans groupement contient plusieurs lignes.")
+            valeur = df_valeurs[valeur_col].iloc[0]
+            x_df_info.loc[masque, "value"] = valeur
+        else:
+            # Fusion classique
+            jointure = pd.merge(
+                sous_df,
+                df_valeurs,
+                how='left',
+                on=list(groupement)
+            )
+            x_df_info.loc[masque, "value"] = jointure[valeur_col].values
+
+        x_df_info.loc[masque, "sigma2"] = data_query[key]["sigma2"]
+
+    return x_df_info
+
+
+def mettre_a_jour_results_store(x_df_info, data_query, results_store, col_source="value_MCG", col_cible="count"):
+    # Copie du results_store mis à jour
+    results_store_modifié = {}
+
+    for key, df_valeurs in results_store.items():
+
+        groupement = data_query[key]["groupement"]
+
+        # Filtrage de x_df_info pour le groupement
+        masque = x_df_info["requête"] == groupement
+        if not any(masque):
+            continue
+
+        sous_df_info = x_df_info[masque].copy()
+
+        if len(groupement) == 0:
+            # Aucun groupement : valeur unique
+            if len(sous_df_info) != 1 or len(df_valeurs) != 1:
+                print(sous_df_info)
+                print(df_valeurs)
+                raise ValueError(f"Incohérence pour '{key}' sans groupement : {len(sous_df_info)} dans x_df_info, {len(df_valeurs)} dans df_valeurs.")
+            valeur = sous_df_info[col_source].iloc[0]
+            df_valeurs[col_cible] = [valeur]
+        else:
+            # Jointure sur les colonnes du groupement
+            jointure = pd.merge(
+                df_valeurs,
+                sous_df_info[list(groupement) + [col_source]],
+                how="left",
+                on=list(groupement)
+            )
+            df_valeurs[col_cible] = jointure[col_source]
+
+        results_store_modifié[key] = df_valeurs
+
+    return results_store_modifié
+
+
+def calcul_MCG(results_store, modalite, dict_query, type_req):
+
+    liste_query = [query['groupement'] for query in dict_query.values()]
+
+    X, R, X_df_infos = MCG(liste_query, modalite)
 
     n, p = X.shape
 
-    dict_request = {fset: {"nb_cellule": produit_modalites(fset, nb_modalite), "sigma2": 1/(2*budget_rho*poids_set[fset])} for fset in liste_request}
+    if p > 0:
 
-    # Matrice de variance Omega (hétéroscédastique)
-    sigma2 = np.array(list(itertools.chain.from_iterable(
-        [v["sigma2"]] * v["nb_cellule"] for v in dict_request.values()
-    )))
+        X_df_infos = ajouter_colonne_value(X_df_infos, dict_query, results_store)
 
-    Y = np.array([20, 12, 23, 10, 7, 9, 13, 21, 23, 24, 25, 20, 20, 27, 59])
-    sigma2 = np.linspace(5, 20, n)
-    Omega_inv = np.diag(1 / sigma2)
+        Y = np.array(X_df_infos["value"])
+        sigma2 = np.array(X_df_infos["sigma2"])
+        Omega_inv = np.diag(1 / sigma2)
+        Omega_inv /= np.max(np.diag(Omega_inv))
+        # Variables
+        beta = cp.Variable(p)
 
-    # Variables
-    beta = cp.Variable(p)
+        # Objectif : moindres carrés pondérés
+        objective = cp.Minimize(cp.quad_form(Y - X @ beta, Omega_inv))
 
-    # Objectif : moindres carrés pondérés
-    objective = cp.Minimize(cp.quad_form(Y - X @ beta, Omega_inv))
+        # Contraintes
 
-    # Contraintes
-    constraints = [
-        R @ beta == 0,
-        beta >= 0
-    ]
+        if R.shape[0] == 0:
+            constraints = [
+                beta >= 0
+            ]
+        else:
+            constraints = [
+                R @ beta == 0,
+                beta >= 0
+            ]
 
-    # Problème
-    problem = cp.Problem(objective, constraints)
-    problem.solve()
-    print("status:", problem.status)
-    X_beta = X @ beta.value
-    X_beta_rounded = np.round(X_beta).astype(int)
-    print("X*beta estimé :", X_beta)
-    print("X*beta estimé rounded :", X_beta_rounded)
+        # Problème
+        problem = cp.Problem(objective, constraints)
+        problem.solve()
+        print("status:", problem.status)
+        X_beta = X @ beta.value
 
-    return X_beta_rounded
+        X_df_infos["value_MCG"] = X_beta
+        print(X_df_infos)
+
+    return mettre_a_jour_results_store(X_df_infos, dict_query, results_store, col_source="value_MCG", col_cible=type_req)
 
 
-def optimization_boosted(budget_rho, nb_modalite, poids):
+def optimization_boosted(dict_query, modalite):
 
-    poids_set = {
-        frozenset() if v['groupement'] == 'Aucun' else frozenset([v['groupement']]) if isinstance(v['groupement'], str) else frozenset(v['groupement']): v["poids_normalise"]
-        for v in poids.values()
-    }
-    liste_request = [s for s in poids_set.keys()]
+    liste_query = [query['groupement'] for query in dict_query.values()]
 
-    X, R, X_df_infos = MCG(liste_request, nb_modalite)
-    print(X)
+    X, R, X_df_infos = MCG(liste_query, modalite)
 
-    print(X_df_infos)
+    nb_modalite = {k: len(v) for k, v in modalite.items()}
 
-    dict_request = {fset: {"nb_cellule": produit_modalites(fset, nb_modalite), "sigma2": 1/(2*budget_rho*poids_set[fset])} for fset in liste_request}
+    dict_request = {key: {"nb_cellule": produit_modalites(query["groupement"], nb_modalite), "sigma2": query["sigma2"]} for key, query in dict_query.items()}
+
     # Matrice de variance Omega (hétéroscédastique)
     sigma2 = np.array(list(itertools.chain.from_iterable(
         [v["sigma2"]] * v["nb_cellule"] for v in dict_request.values()
@@ -446,127 +410,18 @@ def optimization_boosted(budget_rho, nb_modalite, poids):
 
     index = 0
     # Création du mapping entre frozenset (clé dans dict_request) et la clé d'origine de poids
-    fs_to_key = {
-        frozenset() if v['groupement'] == 'Aucun' else frozenset([v['groupement']]) if isinstance(v['groupement'], str) else frozenset(v['groupement']): k
-        for k, v in poids.items()
-    }
-    for fset in dict_request:
-        nb = dict_request[fset]["nb_cellule"]
-        if fset in fs_to_key:
-            original_key = fs_to_key[fset]
-            poids[original_key]["scale"] = np.sqrt(var_Xbeta_constrained[index])
+
+    for key in dict_request:
+        nb = dict_request[key]["nb_cellule"]
+        dict_query[key]["scale"] = np.sqrt(var_Xbeta_constrained[index])
         index += nb
-    return poids
-
-
-def ameliorer_total(key, req, df_result, poids_estimateur_tot, results_store, lien_total_req_dict):
-
-    variable = req["variable"]
-    vars_key = next((k for k, v in lien_total_req_dict[variable].items() if v == key), None)
-    poids_dict = poids_estimateur_tot[variable][vars_key]
-    df_result_base = df_result.copy() if df_result is not None else None
-    vars_key_list = [vars_key] if isinstance(vars_key, str) else list(vars_key)
-    if df_result_base is not None:
-        df_result_base['sum_amelioree'] = 0.0
-
-    for ref_key, poids in poids_dict.items():
-        if poids == 0:
-            continue
-
-        df_ref = results_store.get(lien_total_req_dict[variable][ref_key])
-        df_ref = df_ref.copy()
-
-        if ref_key == vars_key:
-            df_result_base['sum_amelioree'] += poids * df_result_base['sum']
-
-        else:
-            group_vars = [ref_key] if isinstance(ref_key, str) else list(ref_key)
-            common_vars = list(set(group_vars) & set(vars_key_list))
-
-            if not common_vars:
-                total_ref = df_ref["sum"].sum()
-                if df_result_base is None:
-                    # Créer un DataFrame d'une seule ligne
-                    df_result_base = pd.DataFrame([{'sum_amelioree': poids * total_ref}])
-                else:
-                    df_result_base['sum_amelioree'] += poids * total_ref
-            else:
-                df_proj = (
-                    df_ref
-                    .groupby(common_vars, as_index=False)
-                    .agg({'sum': 'sum'})
-                    .rename(columns={'sum': 'sum_ref'})
-                )
-
-                if df_result_base is None:
-                    df_result_base = df_proj.copy()
-                    df_result_base['sum_amelioree'] = poids * df_result_base['sum_ref']
-                    df_result_base = df_result_base.drop(columns=['sum_ref'])
-                else:
-                    merged = df_result_base.merge(df_proj, on=common_vars, how='left')
-                    df_result_base['sum_amelioree'] += poids * merged['sum_ref']
-
-    # ✅ Remplacer la colonne sum
-    df_result_base['sum'] = df_result_base['sum_amelioree'].round(0).clip(lower=0).astype(int)
-    df_result_base = df_result_base.drop(columns=['sum_amelioree'])
-    return df_result_base
-
-
-def ameliorer_comptage(key, df_result, poids_estimateur, results_store, lien_comptage_req):
-    vars_key = next((k for k, v in lien_comptage_req.items() if v == key), None)
-    poids_dict = poids_estimateur[vars_key]
-    df_result_base = df_result.copy() if df_result is not None else None
-    vars_key_list = [vars_key] if isinstance(vars_key, str) else list(vars_key)
-    if df_result_base is not None:
-        df_result_base['count_amelioree'] = 0.0
-
-    for ref_key, poids in poids_dict.items():
-        if poids == 0:
-            continue
-
-        df_ref = results_store.get(lien_comptage_req[ref_key])
-        df_ref = df_ref.copy()
-
-        if ref_key == vars_key:
-            df_result_base['count_amelioree'] += poids * df_result_base['count']
-
-        else:
-            group_vars = [ref_key] if isinstance(ref_key, str) else list(ref_key)
-            common_vars = list(set(group_vars) & set(vars_key_list))
-
-            if not common_vars:
-                total_ref = df_ref["count"].sum()
-                if df_result_base is None:
-                    # Créer un DataFrame d'une seule ligne
-                    df_result_base = pd.DataFrame([{'count_amelioree': poids * total_ref}])
-                else:
-                    df_result_base['count_amelioree'] += poids * total_ref
-            else:
-                df_proj = (
-                    df_ref
-                    .groupby(common_vars, as_index=False)
-                    .agg({'count': 'sum'})
-                    .rename(columns={'count': 'count_ref'})
-                )
-
-                if df_result_base is None:
-                    df_result_base = df_proj.copy()
-                    df_result_base['count_amelioree'] = poids * df_result_base['count_ref']
-                    df_result_base = df_result_base.drop(columns=['count_ref'])
-                else:
-                    merged = df_result_base.merge(df_proj, on=common_vars, how='left')
-                    df_result_base['count_amelioree'] += poids * merged['count_ref']
-
-    # ✅ Remplacer la colonne count
-    df_result_base['count'] = df_result_base['count_amelioree'].round(0).clip(lower=0).astype(int)
-    df_result_base = df_result_base.drop(columns=['count_amelioree'])
-    return df_result_base
+    return dict_query
 
 
 def update_context(CONTEXT_PARAM, budget, requete):
 
     poids_req_rho = [req["poids"] for req in requete.values() if req["type"].lower() != "quantile"]
-    poids_req_eps = 1 - poids_req_rho
+    poids_req_eps = [req["poids"] for req in requete.values() if req["type"].lower() == "quantile"]
     budget_rho = budget * sum(poids_req_rho)
     budget_eps = np.sqrt(8 * budget * sum(poids_req_eps))
 
@@ -589,99 +444,6 @@ def update_context(CONTEXT_PARAM, budget, requete):
         )
 
     return context_rho, context_eps
-
-
-# Fonction pour forcer une variable à 0 en modifiant A et b
-def impose_zero(A, b, index):
-    A[index, :] = 0
-    A[index, index] = 1
-    b[index] = 0
-    return A, b
-
-
-# Résolution itérative avec contraintes positives
-def solve_projected(A, b):
-    for _ in range(10):  # max 10 itérations
-        try:
-            x = np.linalg.solve(A, b)
-        except np.linalg.LinAlgError:
-            print("❌ Système non inversible.")
-            return None
-
-        if np.all(x >= -1e-10):
-            return np.clip(x, 0, None)
-
-        # On impose à 0 les variables négatives
-        for i, val in enumerate(x):
-            if val < 0:
-                A, b = impose_zero(A, b, i)
-
-    print("❌ Convergence non atteinte.")
-    return None
-
-
-def sys_budget_dp(budget_rho, nb_modalite, poids):
-    total = sum(poids.values())
-    poids = {k: v / total for k, v in poids.items()}
-    poids_set = {
-        frozenset() if k == 'Aucun' else frozenset([k]) if isinstance(k, str) else frozenset(k): v
-        for k, v in poids.items()
-    }
-    subsets = [s for s in poids_set.keys()]
-    N = len(poids_set)
-
-    # Matrices initialisées
-    Q = np.zeros((N, N))
-    # Construction de Q
-    for i, Ei in enumerate(subsets):
-        for j, Ej in enumerate(subsets):
-            if Ei == Ej:
-                Q[i, j] = 1
-            elif Ei.issubset(Ej):
-                diff = Ej - Ei
-                prod = 1
-                for k in diff:
-                    prod *= nb_modalite[k]
-                Q[i, j] = 1 / prod
-
-    P = np.zeros((N, 1))
-    for i, subset in enumerate(subsets):
-        P[i, 0] = - poids_set.get(frozenset(subset), 0)
-
-    b = np.zeros((N + 1, 1))
-    b[-1, 0] = budget_rho
-
-    A = np.zeros((N + 1, N + 1))
-    A[:N, N] = P.flatten()
-    A[:N, :N] = Q
-    A[N, :N] = 1
-
-    x_sol = solve_projected(A.copy(), b.copy())
-    rho_req = {}
-    rho_atteint = {}
-    poids_estimateur = {}
-    if x_sol is not None:
-        print(f"ρ optimal = {x_sol[N].item():.3f} vs ρ budget = {budget_rho:.3f} (Gain net de {(x_sol[N].item()-budget_rho):.3f})")
-        for i, ((nom, p), x) in enumerate(zip(poids.items(), x_sol[:N])):
-            if x.item() != 0:
-                var_estim = 1/(2*p*x_sol[N].item())
-                rho_req[nom] = x.item()
-                print(f"Ecart type de la requête pour {nom} = {np.sqrt(1/(2*x.item())):.2f}Δ et écart type de l'estimation = {np.sqrt(var_estim):.2f}Δ")
-            else:
-                var_estim = 1/(2*np.dot(Q[i], x_sol[:N].flatten()))
-                print(f"Pas de requête pour {nom} et écart type de l'estimation = {np.sqrt(var_estim):.2f}Δ")
-
-            rho_atteint[nom] = 1/(2*var_estim)
-            poids_estimateur[nom] = {}
-            for j, ((nom_2, _), x_2) in enumerate(zip(poids.items(), x_sol[:N])):
-                poids_estim = var_estim * Q[i][j] * 2 * x_sol[j].item()
-                if poids_estim > 0:
-                    poids_estimateur[nom][nom_2] = poids_estim
-                    print(f"    - Poids de l'estimation par la requête {nom_2} = {poids_estim:.2f}")
-    else:
-        print("❌ Aucune solution admissible.")
-    print(f"---------------------------------------------------------------------------------------------------")
-    return rho_atteint, rho_req, poids_estimateur
 
 
 def rho_from_eps_delta(epsilon, delta):
@@ -792,47 +554,6 @@ def manual_quantile_score(data, candidats, alpha, et_si=False):
         scores.append(abs(score))
 
     return np.array(scores), max(alpha_num, alpha_denum - alpha_num)
-
-
-def organiser_par_by(dico_requetes, dico_poids):
-    lien_croisement_req = defaultdict(dict)
-
-    # Première passe : création des entrées avec poids brut
-    for query, params in dico_requetes.items():
-        if 'by' not in params:
-            groupement = 'Aucun'
-        else:
-            by = params['by']
-            if isinstance(by, str):
-                groupement = by
-            elif isinstance(by, list):
-                groupement = by[0] if len(by) == 1 else tuple(by)
-            else:
-                groupement = 'Aucun'
-
-        # Récupération des noms de requêtes associés
-        reqs = params.get('req', [])
-
-        # Calcul du poids total
-        poids_total = sum(dico_poids.get(r, 0) for r in reqs)
-
-        # Ajout à la structure finale
-        lien_croisement_req[query] = {
-            "groupement": groupement,
-            "req": reqs,
-            "poids": poids_total
-        }
-
-    # Deuxième passe : calcul des poids normalisés
-    total_poids = sum(v["poids"] for v in lien_croisement_req.values())
-    if total_poids > 0:
-        for v in lien_croisement_req.values():
-            v["poids_normalise"] = v["poids"] / total_poids
-    else:
-        for v in lien_croisement_req.values():
-            v["poids_normalise"] = 0.0  # ou None si tu préfères
-
-    return dict(lien_croisement_req)
 
 
 def get_weights(request, input) -> dict:

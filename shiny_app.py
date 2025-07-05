@@ -23,11 +23,13 @@ from src.fonctions import (
     eps_from_rho_delta, optimization_boosted,
     update_context,
     get_weights, intervalle_confiance_quantile,
-    organiser_par_by, load_data,
+    load_data,
     generate_yaml_metadata_from_lazyframe_as_string
 )
 from src.constant import (
-    storage_options
+    storage_options,
+    contrib_individu,
+    borne_max_taille_dataset
 )
 
 from shiny import App, ui, render, reactive
@@ -44,6 +46,7 @@ import polars as pl
 import io
 import json
 import yaml
+from typing import Any
 
 dp.enable_features("contrib")
 
@@ -81,7 +84,12 @@ def server(input, output, session):
     trigger_update_budget = reactive.Value(0)
 
     @reactive.Calc
-    def query():
+    def get_poids_req() -> dict[str, float]:
+        poids = get_weights(requetes(), input)
+        return poids
+
+    @reactive.Calc
+    def dict_query() -> dict[str, dict[str, Any]]:
         data_requetes = requetes()
         req_non_moyenne = {k: v for k, v in data_requetes.items() if v["type"].lower() not in ["moyenne", "mean"]}
         req_moyenne = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["moyenne", "mean"]}
@@ -136,44 +144,64 @@ def server(input, output, session):
                 cle = f"query_{i}"
                 query[cle] = query_request
                 i += 1
-        print(query)
+
+        # Première passe : création des entrées avec poids brut
+        for params in query.values():
+            if 'by' not in params:
+                groupement = frozenset()
+                groupement_style = 'Aucun'
+            else:
+                by = params['by']
+                if isinstance(by, str):
+                    groupement = frozenset([by])
+                    groupement_style = by
+                elif isinstance(by, list):
+                    groupement = frozenset(by)
+                    groupement_style = by[0] if len(by) == 1 else tuple(by)
+
+            params["groupement"] = groupement
+            params["groupement_style"] = groupement_style
+
+            # Récupération des noms de requêtes associés
+            reqs = params.get('req', [])
+
+            # Calcul du poids total
+            poids_total = sum(get_poids_req().get(r, 0) for r in reqs)
+
+            params["poids"] = poids_total
+
+            if params["type"] == "Comptage":
+                params["sigma2"] = 1/(2 * input.budget_total() * params["poids"])
+
+            if params["type"] == "Total":
+                L, U = params["bounds"]
+                params["sigma2"] = max(U**2, L**2)/(2 * input.budget_total() * params["poids"])
         return query
 
     @reactive.Calc
-    def get_poids():
-        poids = get_weights(requetes(), input)
-        return poids
+    def conception_query_count() -> dict[str, dict[str, Any]]:
+        data_query = dict_query()
+        query_comptage = {k: v for k, v in data_query.items() if v["type"].lower() in ["count", "comptage"]}
+        query_comptage = optimization_boosted(dict_query=query_comptage, modalite=key_values())
+        return query_comptage
 
     @reactive.Calc
-    def conception_req_count():
-        data_query = query()
-        poids_req = get_poids()
-        req_comptage = {k: v for k, v in data_query.items() if v["type"].lower() in ["count", "comptage"]}
-        req_comptage_croisement = organiser_par_by(req_comptage, poids_req)
-        budget_comptage = input.budget_total() * sum(croisement["poids"] for croisement in req_comptage_croisement.values())
-
-        if budget_comptage == 0:
-            return {}
-
-        req_comptage_croisement = optimization_boosted(budget_rho=budget_comptage, nb_modalite=nb_modalite_var(), poids=req_comptage_croisement)
-        return req_comptage_croisement
-
-    @reactive.Calc
-    def df_comptage():
-        req_comptage_croisement = conception_req_count()
+    def df_comptage() -> pd.DataFrame:
+        query_comptage = conception_query_count()
         data_requetes = requetes()
         req_comptage = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["count", "comptage"]}
         results = []
-        for request in req_comptage_croisement.values():
+        for query in query_comptage.values():
 
-            for req in request["req"]:
+            for req in query["req"]:
 
                 if req in req_comptage:
 
                     results.append({
                         "requête": req,
-                        "groupement": request["groupement"],
-                        "écart type": request["scale"]
+                        "groupement": query["groupement_style"],
+                        "écart type estimation": query["scale"],
+                        "écart type bruit": np.sqrt(query["sigma2"])
                     })
 
         return pd.DataFrame(results).round(1)
@@ -185,67 +213,54 @@ def server(input, output, session):
 
     @render_widget
     def plot_comptage():
-        return create_barplot(df_comptage(), x_col="requête", y_col="écart type", hoover="groupement", color="groupement")
+        return create_barplot(df_comptage(), x_col="requête", y_col="écart type estimation", hoover="groupement", color="groupement")
 
     @render.plot
     def graphe_plot():
-        req_comptage_croisement = conception_req_count()
-        liste_request = [
-            frozenset() if request['groupement'] == 'Aucun' else frozenset([request['groupement']]) if isinstance(request['groupement'], str) else frozenset(request['groupement'])
-            for request in req_comptage_croisement.values()
-        ]
+        req_comptage_croisement = conception_query_count()
+        liste_request = [request['groupement'] for request in req_comptage_croisement.values()]
         return plot_subset_tree(liste_request, taille_noeuds=2000, keep_gris=False)
 
     @reactive.Calc
-    def conception_req_sum():
+    def conception_query_sum() -> dict[str, dict[str, Any]]:
+        data_query = dict_query()
 
-        data_query = query()
-        poids_req = get_poids()
-
-        req_total = {k: v for k, v in data_query.items() if v["type"].lower() in ["total", "sum", "somme"]}
-        req_total_croisement_par_variable = {}
+        query_total = {k: v for k, v in data_query.items() if v["type"].lower() in ["total", "sum", "somme"]}
+        query_total_par_variable = {}
 
         # Récupération des variables distinctes
-        variables_uniques = set(v["variable"] for v in req_total.values())
+        variables_uniques = set(v["variable"] for v in query_total.values())
 
         # Boucle sur chaque variable unique
         for variable in variables_uniques:
             # Sous-ensemble des requêtes ayant cette variable
-            req_variable = {
-                k: v for k, v in req_total.items()
+            query_total_variable = {
+                k: v for k, v in query_total.items()
                 if v["variable"] == variable
             }
 
-            req_total_croisement = organiser_par_by(req_variable, poids_req)
-            budget_total_variable = input.budget_total() * sum(croisement["poids"] for croisement in req_total_croisement.values())
+            query_total_variable = optimization_boosted(dict_query=query_total_variable, modalite=key_values())
+            query_total_par_variable[variable] = query_total_variable
 
-            if budget_total_variable == 0:
-                return None
-
-            req_total_croisement = optimization_boosted(budget_rho=budget_total_variable, nb_modalite=nb_modalite_var(), poids=req_total_croisement)
-            req_total_croisement_par_variable[variable] = req_total_croisement
-
-        return req_total_croisement_par_variable
+        return query_total_par_variable
 
     @reactive.Calc
-    def df_total():
-        req_total_croisement_par_variable = conception_req_sum()
+    def df_total() -> pd.DataFrame:
+        query_total_par_variable = conception_query_sum()
         data_requetes = requetes()
         req_total = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["total", "sum", "somme"]}
 
         results = []
-        for variable, req_total_croisement in req_total_croisement_par_variable.items():
-            for request in req_total_croisement.values():
-                for req in request["req"]:
+        for variable, query_total_variable in query_total_par_variable.items():
+            for query in query_total_variable.values():
+                for req in query["req"]:
                     if req in req_total:
-                        requete = data_requetes[req]
-                        L, U = requete["bounds"]
-                        scale = max(abs(U), abs(L))*request["scale"]
+                        scale = query["scale"]
 
-                        label = f"{variable}<br>groupement: {request["groupement"]}"
+                        label = f"{variable}<br>groupement: {query["groupement_style"]}"
 
-                        resultat = process_request(dataset().lazy(), requete)
-                        resultat_non_biaise = process_request(dataset().lazy(), requete, use_bounds=False)
+                        resultat = process_request(dataset().lazy(), query)
+                        resultat_non_biaise = process_request(dataset().lazy(), query, use_bounds=False)
 
                         list_cv = []
                         list_biais_relatif = []
@@ -267,10 +282,12 @@ def server(input, output, session):
                             "requête": req,
                             "label": label,
                             "variable": variable,
-                            "groupement": request["groupement"],
+                            "groupement": query["groupement_style"],
                             "cv moyen (%)": cv_moyen,
                             "biais relatif moyen (%)": biais_relatif_moyen,
-                            "écart type": scale
+                            "écart type estimation": scale,
+                            "écart type bruit": np.sqrt(query["sigma2"])
+
                         })
         return pd.DataFrame(results).round(1)
 
@@ -285,9 +302,9 @@ def server(input, output, session):
         return create_barplot(df_total(), x_col="requête", y_col="cv moyen (%)", hoover="label", color="groupement")
 
     @reactive.Calc
-    def df_moyenne():
-        req_comptage_croisement = conception_req_count()
-        req_total_croisement_par_variable = conception_req_sum()
+    def df_moyenne() -> dict[str, dict[str, Any]]:
+        query_comptage = conception_query_count()
+        query_total_par_variable = conception_query_sum()
         data_requetes = requetes()
         req_moyenne = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["moyenne", "mean"]}
 
@@ -295,23 +312,22 @@ def server(input, output, session):
 
         for key, req in req_moyenne.items():
 
-            for params in req_comptage_croisement.values():
+            for query in query_comptage.values():
 
-                if key in params["req"]:
+                if key in query["req"]:
 
-                    scale_comptage = params["scale"]
+                    scale_comptage = query["scale"]
                     break
 
             variable = req["variable"]
 
-            for request in req_total_croisement_par_variable[variable].values():
+            for query in query_total_par_variable[variable].values():
 
-                if key in request["req"]:
+                if key in query["req"]:
 
-                    L, U = req["bounds"]
-                    scale_total = max(abs(U), abs(L))*request["scale"]
+                    scale_total = query["scale"]
 
-                    label = f"{variable}<br>groupement: {request["groupement"]}"
+                    label = f"{variable}<br>groupement: {query["groupement_style"]}"
 
                     resultat = process_request(dataset().lazy(), req)
                     resultat_non_biaise = process_request(dataset().lazy(), req, use_bounds=False)
@@ -341,7 +357,7 @@ def server(input, output, session):
                         "requête": key,
                         "label": label,
                         "variable": variable,
-                        "groupement": request["groupement"],
+                        "groupement": query["groupement_style"],
                         "cv moyen (%)": cv_moyen,
                         "biais relatif moyen (%)": biais_relatif_moyen,
                         "écart type total": scale_total,
@@ -366,58 +382,51 @@ def server(input, output, session):
         return create_barplot(df_moyenne(), x_col="requête", y_col="cv moyen (%)", hoover="label", color="groupement")
 
     @reactive.Calc
-    def conception_req_quantile():
+    def conception_query_quantile() -> dict[str, dict[str, Any]]:
 
-        data_query = query()
-        data_requetes = requetes()
-        poids_req = get_poids()
+        data_query = dict_query()
+        query_quantile = {k: v for k, v in data_query.items() if v["type"].lower() in ["quantile"]}
+        query_quantile_par_variable = {}
 
-        req_quantile = {k: v for k, v in data_query.items() if v["type"].lower() in ["quantile"]}
-        req_quantile_croisement_par_variable = {}
-
-        variables_uniques = set(v["variable"] for v in req_quantile.values())
+        variables_uniques = set(v["variable"] for v in query_quantile.values())
 
         # Boucle sur chaque variable unique
         for variable in variables_uniques:
             # Sous-ensemble des requêtes ayant cette variable
-            req_variable = {
-                k: v for k, v in req_quantile.items()
+            query_quantile_variable = {
+                k: v for k, v in query_quantile.items()
                 if v["variable"] == variable
             }
 
-            req_quantile_croisement = organiser_par_by(req_variable, poids_req)
+            for key_query, query in query_quantile_variable.items():
 
-            for key_query, request in req_quantile_croisement.items():
-
-                budget_req_quantile = input.budget_total() * request["poids"]
+                budget_req_quantile = input.budget_total() * query["poids"]
                 epsilon = np.sqrt(8 * budget_req_quantile)
 
-                req = data_requetes[request["req"][0]]
+                ic = intervalle_confiance_quantile(dataset(), query, epsilon)
 
-                ic = intervalle_confiance_quantile(dataset(), req, epsilon)
+                query_quantile_variable[key_query]["scale"] = ic
 
-                req_quantile_croisement[key_query]["scale"] = ic
+            query_quantile_par_variable[variable] = query_quantile_variable
 
-            req_quantile_croisement_par_variable[variable] = req_quantile_croisement
-
-        return req_quantile_croisement_par_variable
+        return query_quantile_par_variable
 
     @reactive.Calc
-    def df_quantile():
-        req_quantile_croisement_par_variable = conception_req_quantile()
+    def df_quantile() -> pd.DataFrame:
+        query_quantile_par_variable = conception_query_quantile()
 
         results = []
-        for variable, req_quantile_croisement in req_quantile_croisement_par_variable.items():
-            for request in req_quantile_croisement.values():
+        for variable, query_quantile_variable in query_quantile_par_variable.items():
+            for query in query_quantile_variable.values():
 
-                label = f"{variable}<br>groupement: {request["groupement"]}"
+                label = f"{variable}<br>groupement: {query["groupement_style"]}"
 
                 results.append({
-                    "requête": request["req"][0],
+                    "requête": query["req"][0],
                     "label": label,
                     "variable": variable,
-                    "groupement": request["groupement"],
-                    "taille moyenne IC 95%": request["scale"]
+                    "groupement": query["groupement_style"],
+                    "taille moyenne IC 95%": query["scale"]
                 })
         return pd.DataFrame(results).round(1)
 
@@ -436,100 +445,28 @@ def server(input, output, session):
     @reactive.event(input.confirm_validation)
     async def req_dp_display():
         # --- Barre de progression ---
-        data_requetes = requetes()
-        with ui.Progress(min=0, max=len(data_requetes)) as p:
-            p.set(0, message="Traitement en cours...", detail="Analyse requête par requête...")
-            poids_req = get_poids()
+        data_query = dict_query()
 
-            _, rho_req_comptage, poids_estimateur, lien_comptage_req = X_count()
-
-            poids_rho_req_comptage = [rho for rho in rho_req_comptage.values()]
-
-            _, rho_req_total_dict, poids_estimateur_dict, lien_total_req_dict = X_total()
-
-            flat_dict = {}
-            for subdict in rho_req_total_dict.values():
-                flat_dict.update(subdict)
-
-            # Trier par ordre des clés 'req_N' selon le numéro
-            poids_rho_req_total = [
-                flat_dict[k] for k in sorted(flat_dict, key=lambda x: int(x.split("_")[1]))
-            ]
-
-            poids_requetes_comptage = [
-                weights[clef]
-                for clef, requete in data_requetes.items()
-                if requete["type"].lower() in ["count", "comptage"]
-            ]
-
-            poids_requetes_total = [
-                weights[clef]
-                for clef, requete in data_requetes.items()
-                if requete["type"].lower() in ["total", "somme", "sum"]
-            ]
-
-            poids_requetes_moyenne = [
-                weights[clef]
-                for clef, requete in data_requetes.items()
-                if requete["type"].lower() in ["moyenne", "mean"]
-            ]
-
-            poids_requetes_quantile = [
-                weights[clef]
-                for clef, requete in data_requetes.items()
-                if requete["type"].lower() == "quantile"
-            ]
-
-            context_param = {
-                "data": dataset().lazy(),
-                "privacy_unit": dp.unit_of(contributions=1),
-                "margins": [dp.polars.Margin(max_partition_length=70_000_000)],
-            }
-
-            budget_comptage = sum(poids_requetes_comptage) * input.budget_total()
-
-            budget_totaux = sum(poids_requetes_total) * input.budget_total()
-
-            context_comptage, context_tot, context_moy, context_quantile = update_context(
-                context_param, input.budget_total(), budget_comptage, budget_totaux, poids_rho_req_comptage, poids_rho_req_total, poids_requetes_moyenne, poids_requetes_quantile
-            )
-            await calculer_toutes_les_requetes(context_comptage, context_tot, context_moy, context_quantile, key_values(), data_requetes, p, resultats_df, dataset(), rho_req_comptage, rho_req_total_dict)
-
-        return afficher_resultats(resultats_df, requetes(), poids_estimateur, poids_estimateur_dict, lien_comptage_req, lien_total_req_dict)
-
-    
-    @output
-    @render.ui
-    @reactive.event(input.confirm_validation)
-    async def req_dp_display():
-        # --- Barre de progression ---
-        data_query = query()
-        poids_req = get_poids()
-        req_croisement = organiser_par_by(data_query, poids_req)
-
-        for k, v in data_query.items():
-            v["poids"] = req_croisement[k]["poids"]
-
-        with ui.Progress(min=0, max=len(req_croisement)) as p:
+        with ui.Progress(min=0, max=len(data_query)) as p:
             p.set(0, message="Traitement en cours...", detail="Analyse requête par requête...")
 
             context_param = {
                 "data": dataset().lazy(),
-                "privacy_unit": dp.unit_of(contributions=1),
-                "margins": [dp.polars.Margin(max_partition_length=70_000_000)],
+                "privacy_unit": dp.unit_of(contributions=contrib_individu),
+                "margins": [dp.polars.Margin(max_partition_length=borne_max_taille_dataset)],
             }
 
             context_rho, context_eps = update_context(context_param, input.budget_total(), data_query)
-            await calculer_toutes_les_requetes(context_rho, context_eps, key_values(), data_query, p, resultats_df, dataset())
+            await calculer_toutes_les_requetes(context_rho, context_eps, key_values(), data_query, p, resultats_df)
 
-        return afficher_resultats(resultats_df, requetes(), data_query)
+        return afficher_resultats(resultats_df, requetes(), data_query, key_values())
 
 
     # Page 1 ----------------------------------
 
     # Lire le dataset si importé sinon dataset déjà en mémoire
     @reactive.Calc
-    def dataset():
+    def dataset() -> pl.DataFrame:
         file = input.dataset_input()
         if file is not None:
             ext = Path(file["name"]).suffix
@@ -586,6 +523,23 @@ def server(input, output, session):
             "": "",
             "🔤 Qualitatives": {col: col for col in qualitative},
             "🧮 Quantitatives": {col: col for col in quantitative}
+        }
+
+    # Extrait les modalités uniques des variavles qualitatives
+    @reactive.Calc
+    def key_values():
+        df = dataset()
+
+        # Détecter les colonnes qualitatives (str ou catégorie)
+        qualitatif_cols = [
+            col for col, dtype in zip(df.columns, df.dtypes)
+            if dtype in [pl.Utf8, pl.Categorical, pl.Boolean]
+        ]
+
+        # Extraire les modalités uniques, triées, sans NaN
+        return {
+            col: sorted(df[col].drop_nulls().unique().to_list())
+            for col in qualitatif_cols
         }
 
     # Extrait les nombres de modalités des variables qualitatives
@@ -934,6 +888,8 @@ def server(input, output, session):
     def on_tab_change():
         requested_tab = input.page()
         if requested_tab == "Résultat DP" and not page_autorisee():
+            # Remettre l'onglet actif sur l'onglet précédent (empêche le changement)
+            ui.update_navs("page", selected=onglet_actuel())
             # Afficher modal pour prévenir
             ui.modal_show(
                 ui.modal(
@@ -943,8 +899,6 @@ def server(input, output, session):
                     footer=None
                 )
             )
-            # Remettre l'onglet actif sur l'onglet précédent (empêche le changement)
-            ui.update_navs("page", selected=onglet_actuel())
         else:
             # Autoriser le changement d'onglet
             onglet_actuel.set(requested_tab)

@@ -70,8 +70,8 @@ class count_dp(request_dp):
 
         expr = (
             pl.col("colonne_comptage")
-            .fill_null(1)
-            .dp.sum((1, 1))
+            .fill_null(0)
+            .dp.sum((0, 1))
             .alias("count")
         )
 
@@ -138,7 +138,8 @@ class sum_dp(request_dp):
         if dtype in [pl.Float32, pl.Float64]:
             expr = expr.fill_nan(0)  # Ajout seulement pour les floats
 
-        expr = expr.dp.sum((l, u)).alias("sum")
+        expr = expr.cast(pl.Int64).dp.sum((l, u)).alias("sum")
+        # expr = expr.dp.sum((l, u)).alias("sum")
 
         if self.filtre is not None:
             query = query.filter(parse_filter_string(self.filtre))
@@ -273,20 +274,17 @@ class quantile_dp(request_dp):
             - Résultat extrêmement bruité
         - Sinon, dans le meilleur des cas, scale des quartiles (0, 0.25, 0.5, 0.75, 1) en (2, 6, 2, 6, 2)
     """
-    def __init__(self, context, key_values, variable, candidats, by=None, bounds=None, filtre=None, alpha=None):
+    def __init__(self, context, key_values, variable, nb_candidats, bounds, alpha, by=None, filtre=None):
         super().__init__(context, key_values, by, variable, bounds, filtre)
 
         # Attention, il y a y un problème avec OpenDP au niveau des candidats
         # Il faut qu'ils soient ordonnées de manière croissante ET de partie entière distincte
-        if candidats["type"] == "list":
-            self.candidats = candidats["values"]
-        elif candidats["type"] == "range":
-            import numpy as np
-            self.candidats = np.arange(candidats["min"], candidats["max"] + candidats["step"], candidats["step"]).tolist()
+        bounds_min, bounds_max = self.bounds
 
-        if alpha is None:
-            self.list_alpha = [0.5]
-        elif isinstance(alpha, list):
+        self.candidats = np.linspace(bounds_min, bounds_max, int(nb_candidats) + 1)
+        # self.candidats = np.arange(candidats["min"], candidats["max"] + candidats["step"], candidats["step"]).tolist()
+
+        if isinstance(alpha, list):
             self.list_alpha = alpha
         else:
             self.list_alpha = [alpha]
@@ -317,4 +315,3 @@ class quantile_dp(request_dp):
 
     def precision(self, alpha=0.05):
         return self.execute().summarize(alpha=alpha)
-

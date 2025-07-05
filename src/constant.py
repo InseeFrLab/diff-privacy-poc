@@ -44,3 +44,7 @@ chemin_dataset = {
 }
 
 radio_to_weight = {1: 1, 2: 0.5, 3: 0.25}
+
+contrib_individu = 1
+
+borne_max_taille_dataset = 70_000_000

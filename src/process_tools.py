@@ -6,31 +6,26 @@ import polars as pl
 import asyncio
 
 
-async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, query, progress, results_store, dataset):
+async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dict_query, progress, results_store):
     current_results = {}
-    df = dataset.lazy()
 
-    for i, (key, req) in enumerate(query.items(), start=1):
-        progress.set(i, message=f"Requête {key} — {req.get('type', '—')}", detail="Calcul en cours...")
+    for i, (key, query) in enumerate(dict_query.items(), start=1):
+        progress.set(i, message=f"Requête {key} — {query.get('type', '—')}", detail="Calcul en cours...")
         await asyncio.sleep(0.05)
 
-        resultat_dp = process_request_dp(context_rho, context_eps, key_values, req).execute()
+        # resultat_dp = process_request_dp(context_rho, context_eps, key_values, query).execute()
+        resultat_dp = process_request_dp(context_rho, context_eps, key_values, query)
+        print(resultat_dp.precision())
+        resultat_dp = resultat_dp.execute()
         df_result = resultat_dp.release().collect()
 
-        if req.get("type") == "Moyenne":
+        if query.get("type") == "Moyenne":
             df_result = df_result.with_columns(mean=pl.col.sum / pl.col.count)
 
-        if req.get("by") is not None:
-            resultat = process_request(df, req)
-            keys = req.get("by")
-            df_result = df_result.join(
-                resultat.select(keys).unique(),  # équivalent de drop_duplicates()
-                on=keys,
-                how="inner"
-            )
-            df_result = df_result.sort(by=req.get("by"))
+        if query.get("by") is not None:
+            df_result = df_result.sort(by=query.get("by"))
 
-            if req.get("type") == "Moyenne":
+            if query.get("type") == "Moyenne":
                 first_cols = df_result.columns[:2]            # Colonnes 0 et 1
                 middle_cols = df_result.columns[2:-1]         # Toutes les colonnes sauf les 2 premières et la dernière
                 last_col = df_result.columns[-1:]             # Colonne finale (doit être un Index, pas une chaîne)
@@ -55,14 +50,14 @@ def process_request_dp(context_rho, context_eps, key_values, req):
     bounds = req.get("bounds")
     filtre = req.get("filtre")
     alpha = req.get("alpha")
-    candidats = req.get("candidats")
+    nb_candidats = req.get("nb_candidats")
     type_req = req["type"]
 
     mapping = {
             "Comptage": lambda: count_dp(context_rho, key_values, by=by, variable=None, filtre=filtre),
             "Moyenne": lambda: mean_dp(context_rho, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre),
             "Total": lambda: sum_dp(context_rho, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre),
-            "Quantile": lambda: quantile_dp(context_eps, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre, alpha=alpha, candidats=candidats)
+            "Quantile": lambda: quantile_dp(context_eps, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre, alpha=alpha, nb_candidats=nb_candidats)
         }
 
     if type_req not in mapping:
