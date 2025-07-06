@@ -138,8 +138,40 @@ class sum_dp(request_dp):
         if dtype in [pl.Float32, pl.Float64]:
             expr = expr.fill_nan(0)  # Ajout seulement pour les floats
 
-        expr = expr.cast(pl.Int64).dp.sum((l, u)).alias("sum")
-        # expr = expr.dp.sum((l, u)).alias("sum")
+        expr = expr.dp.sum((l, u)).alias("sum")
+
+        if self.filtre is not None:
+            query = query.filter(parse_filter_string(self.filtre))
+
+        if self.by is not None:
+            query = (
+                query.group_by(self.by)
+                .agg(expr)
+                .join(self.generate_public_keys(by_keys=self.by), on=self.by, how="right")
+            )
+        else:
+            query = query.select(expr)
+        return query
+
+    def precision(self, alpha=0.05):
+        return self.execute().summarize(alpha=alpha)
+
+
+class sum_centered_dp(request_dp):
+    def execute(self):
+        l, u = self.bounds
+        m = (l + u)/2
+        sensi = (u - l)/2
+        query = self.context.query()
+
+        dtype = query.collect_schema().get(self.variable, None)
+        query = self.context.query()
+        expr = (pl.col(self.variable) - m).fill_null(0)
+
+        if dtype in [pl.Float32, pl.Float64]:
+            expr = expr.fill_nan(0)  # Ajout seulement pour les floats
+
+        expr = expr.dp.sum((-sensi, sensi)).alias("sum")
 
         if self.filtre is not None:
             query = query.filter(parse_filter_string(self.filtre))

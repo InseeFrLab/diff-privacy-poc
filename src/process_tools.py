@@ -1,9 +1,8 @@
 from src.request_class import (
-    count_dp, mean_dp, sum_dp, quantile_dp
+    count_dp, mean_dp, sum_centered_dp, quantile_dp
 )
 from src.fonctions import parse_filter_string
 import polars as pl
-import asyncio
 
 
 async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dict_query, progress, results_store):
@@ -11,11 +10,11 @@ async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dic
 
     for i, (key, query) in enumerate(dict_query.items(), start=1):
         progress.set(i, message=f"Requête {key} — {query.get('type', '—')}", detail="Calcul en cours...")
-        await asyncio.sleep(0.05)
+        # await asyncio.sleep(0.05)
 
         # resultat_dp = process_request_dp(context_rho, context_eps, key_values, query).execute()
         resultat_dp = process_request_dp(context_rho, context_eps, key_values, query)
-        print(resultat_dp.precision())
+        # print(resultat_dp.precision())
         resultat_dp = resultat_dp.execute()
         df_result = resultat_dp.release().collect()
 
@@ -56,7 +55,7 @@ def process_request_dp(context_rho, context_eps, key_values, req):
     mapping = {
             "Comptage": lambda: count_dp(context_rho, key_values, by=by, variable=None, filtre=filtre),
             "Moyenne": lambda: mean_dp(context_rho, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre),
-            "Total": lambda: sum_dp(context_rho, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre),
+            "Total": lambda: sum_centered_dp(context_rho, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre),
             "Quantile": lambda: quantile_dp(context_eps, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre, alpha=alpha, nb_candidats=nb_candidats)
         }
 

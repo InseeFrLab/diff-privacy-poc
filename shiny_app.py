@@ -91,18 +91,18 @@ def server(input, output, session):
     @reactive.Calc
     def dict_query() -> dict[str, dict[str, Any]]:
         data_requetes = requetes()
-        req_non_moyenne = {k: v for k, v in data_requetes.items() if v["type"].lower() not in ["moyenne", "mean"]}
-        req_moyenne = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["moyenne", "mean"]}
+        req_comptage_quantile = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["comptage", "quantile"]}
+        req_total_moyenne = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["moyenne", "total"]}
         query = {}
         i = 1
-        for (key, request) in req_non_moyenne.items():
+        for (key, request) in req_comptage_quantile.items():
             query_request = request.copy()
             query_request["req"] = [key]
             cle = f"query_{i}"
             query[cle] = query_request
             i += 1
 
-        for (key, request) in req_moyenne.items():
+        for (key, request) in req_total_moyenne.items():
             query_request = request.copy()
             # Cas 1 : Total
             query_request["type"] = "Total"
@@ -175,7 +175,7 @@ def server(input, output, session):
 
             if params["type"] == "Total":
                 L, U = params["bounds"]
-                params["sigma2"] = max(U**2, L**2)/(2 * input.budget_total() * params["poids"])
+                params["sigma2"] = (U - L)**2/(4 * 2 * input.budget_total() * params["poids"])
         return query
 
     @reactive.Calc
@@ -246,55 +246,83 @@ def server(input, output, session):
 
     @reactive.Calc
     def df_total() -> pd.DataFrame:
+        query_comptage = conception_query_count()
         query_total_par_variable = conception_query_sum()
         data_requetes = requetes()
         req_total = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["total", "sum", "somme"]}
 
         results = []
-        for variable, query_total_variable in query_total_par_variable.items():
-            for query in query_total_variable.values():
-                for req in query["req"]:
-                    if req in req_total:
-                        scale = query["scale"]
 
-                        label = f"{variable}<br>groupement: {query["groupement_style"]}"
+        for key, req in req_total.items():
 
-                        resultat = process_request(dataset().lazy(), query)
-                        resultat_non_biaise = process_request(dataset().lazy(), query, use_bounds=False)
+            for query in query_comptage.values():
 
-                        list_cv = []
-                        list_biais_relatif = []
+                if key in query["req"]:
+                    sigma2_comptage = query["sigma2"]
+                    scale_comptage = query["scale"]
+                    break
 
-                        for row_biaise, row_non_biaise in zip(resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)):
+            variable = req["variable"]
 
-                            # Calcul du CV
-                            cv = 100 * scale / row_biaise["sum"] if row_biaise["sum"] != 0 else float("inf")
-                            biais = row_biaise["sum"] - row_non_biaise["sum"]
-                            biais_relatif = 100 * biais / row_non_biaise["sum"]
+            for query in query_total_par_variable[variable].values():
 
-                            list_cv.append(cv)
-                            list_biais_relatif.append(biais_relatif)
+                if key in query["req"]:
 
-                        cv_moyen = np.mean(list_cv)
-                        biais_relatif_moyen = np.mean(list_biais_relatif)
+                    sigma2_total_centre = query["sigma2"]
+                    scale_total_centre = query["scale"]
 
-                        results.append({
-                            "requête": req,
-                            "label": label,
-                            "variable": variable,
-                            "groupement": query["groupement_style"],
-                            "cv moyen (%)": cv_moyen,
-                            "biais relatif moyen (%)": biais_relatif_moyen,
-                            "écart type estimation": scale,
-                            "écart type bruit": np.sqrt(query["sigma2"])
+                    L, U = query["bounds"]
 
-                        })
+                    var_comptage = (scale_comptage * (U + L)/2)**2
+
+                    scale = np.sqrt(var_comptage + scale_total_centre**2)
+
+                    label = f"{variable}<br>groupement: {query["groupement_style"]}"
+
+                    resultat = process_request(dataset().lazy(), req)
+                    resultat_non_biaise = process_request(dataset().lazy(), req, use_bounds=False)
+
+                    list_cv = []
+                    list_biais_relatif = []
+
+                    for row_biaise, row_non_biaise in zip(resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)):
+
+                        # Calcul du CV
+                        cv = 100 * scale / row_biaise["sum"] if row_biaise["sum"] != 0 else float("inf")
+                        biais = row_biaise["sum"] - row_non_biaise["sum"]
+                        biais_relatif = 100 * biais / row_non_biaise["sum"]
+
+                        list_cv.append(cv)
+                        list_biais_relatif.append(biais_relatif)
+
+                    cv_moyen = np.mean(list_cv)
+                    biais_relatif_moyen = np.mean(list_biais_relatif)
+
+                    results.append({
+                        "requête": key,
+                        "label": label,
+                        "variable": variable,
+                        "groupement": query["groupement_style"],
+                        "cv moyen (%)": cv_moyen,
+                        "biais relatif moyen (%)": biais_relatif_moyen,
+                        "écart type estimation": scale,
+                        "écart type total centré": scale_total_centre,
+                        "écart type comptage": scale_comptage,
+                        "écart type bruit total centré": np.sqrt(sigma2_total_centre),
+                        "écart type bruit comptage": np.sqrt(sigma2_comptage),
+
+                    })
+
+                    break
         return pd.DataFrame(results).round(1)
 
     @output
     @render.data_frame
     def table_total():
-        df = df_total().drop(columns="label").round(0)
+        df = df_total().drop(columns="label")
+        # Définir l'arrondi spécifique
+        arrondi = {col: 1 if col in ["cv moyen (%)", "biais relatif moyen (%)", "écart type comptage", "écart type bruit comptage"] else 0 for col in df.columns}
+        df = df.round(arrondi)
         return df
 
     @render_widget
@@ -315,7 +343,7 @@ def server(input, output, session):
             for query in query_comptage.values():
 
                 if key in query["req"]:
-
+                    sigma2_comptage = query["sigma2"]
                     scale_comptage = query["scale"]
                     break
 
@@ -325,7 +353,14 @@ def server(input, output, session):
 
                 if key in query["req"]:
 
-                    scale_total = query["scale"]
+                    sigma2_total_centre = query["sigma2"]
+                    scale_total_centre = query["scale"]
+
+                    L, U = query["bounds"]
+
+                    var_comptage = (scale_comptage * (U + L)/2)**2
+
+                    scale_total = np.sqrt(var_comptage + scale_total_centre**2)
 
                     label = f"{variable}<br>groupement: {query["groupement_style"]}"
 
@@ -340,9 +375,9 @@ def server(input, output, session):
                         total_non_biaise = row_non_biaise.get("sum", 0)
                         count = row_biaise.get("count", 1)
 
-                        cv_total = scale_total / total if total != 0 else float("inf")
-                        cv_count = scale_comptage / count if count != 0 else float("inf")
-                        cv = 100 * np.sqrt(cv_total**2 + cv_count**2)
+                        cv_t = scale_total_centre / count if count != 0 else float("inf")
+                        cv_c = total * scale_comptage / (count**2) if count != 0 else float("inf")
+                        cv = 100 * np.sqrt(cv_t**2 + cv_c**2) / (total / count) if count != 0 else float("inf")
 
                         biais = (total - total_non_biaise) / count
                         biais_relatif = 100 * biais / (total_non_biaise/count)
@@ -360,8 +395,11 @@ def server(input, output, session):
                         "groupement": query["groupement_style"],
                         "cv moyen (%)": cv_moyen,
                         "biais relatif moyen (%)": biais_relatif_moyen,
+                        "écart type total centré": scale_total_centre,
+                        "écart type comptage": scale_comptage,
                         "écart type total": scale_total,
-                        "écart type comptage": scale_comptage
+                        "écart type bruit total centré": np.sqrt(sigma2_total_centre),
+                        "écart type bruit comptage": np.sqrt(sigma2_comptage),
                     })
 
                     break
@@ -373,7 +411,7 @@ def server(input, output, session):
     def table_moyenne():
         df = df_moyenne().drop(columns="label")
         # Définir l'arrondi spécifique
-        arrondi = {col: 1 if col == "écart type comptage" else 0 for col in df.columns}
+        arrondi = {col: 1 if col in ["cv moyen (%)", "biais relatif moyen (%)", "écart type comptage", "écart type bruit comptage"] else 0 for col in df.columns}
         df = df.round(arrondi)
         return df
 
@@ -461,7 +499,6 @@ def server(input, output, session):
 
         return afficher_resultats(resultats_df, requetes(), data_query, key_values())
 
-
     # Page 1 ----------------------------------
 
     # Lire le dataset si importé sinon dataset déjà en mémoire
@@ -481,7 +518,6 @@ def server(input, output, session):
                 return pl.DataFrame(sns.load_dataset(input.default_dataset()).dropna())
             else:
                 return load_data(input.default_dataset(), storage_options)
-
 
     @reactive.Calc
     def yaml_metadata_str():

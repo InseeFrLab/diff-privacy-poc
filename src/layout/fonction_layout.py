@@ -30,12 +30,12 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
             }
 
         results_total_variable = {k: v for k, v in current_results.items() if k in query_total_variable.keys()}
-        results_total_variable = calcul_MCG(results_total_variable, modalite, query_total_variable, "sum")
+        results_total_variable = calcul_MCG(results_total_variable, modalite, query_total_variable, "sum", pos=False)
         results_total_par_variable[variable] = results_total_variable
 
     for key, req in requetes.items():
 
-        if req["type"] == "Moyenne":
+        if req["type"] == "Total":
             key_query_comptage = next(
                 (k for k, v in data_query.items() if key in v["req"] and v["type"] == "Comptage"),
                 None  # valeur par défaut si rien n'est trouvé
@@ -45,6 +45,7 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
                 None
             )
             variable = req["variable"]
+            L, U = req["bounds"]
 
             df_result_comptage = results_comptage[key_query_comptage]
             df_result_total = results_total_par_variable[variable][key_query_total]
@@ -59,6 +60,35 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
             # Supprimer les colonnes en doublon éventuelles
             df_result = df_result.loc[:, ~df_result.columns.duplicated()]
 
+            df_result["sum"] = df_result["sum"] + df_result["count"]*(U + L)/2
+
+        elif req["type"] == "Moyenne":
+            key_query_comptage = next(
+                (k for k, v in data_query.items() if key in v["req"] and v["type"] == "Comptage"),
+                None  # valeur par défaut si rien n'est trouvé
+            )
+            key_query_total = next(
+                (k for k, v in data_query.items() if key in v["req"] and v["type"] == "Total"),
+                None
+            )
+            variable = req["variable"]
+            L, U = req["bounds"]
+
+            df_result_comptage = results_comptage[key_query_comptage]
+            df_result_total = results_total_par_variable[variable][key_query_total]
+
+            # On concatène horizontalement sur l’index (corrigé)
+            df_result = pd.concat(
+                [df_result_total.reset_index(drop=True),
+                df_result_comptage.reset_index(drop=True)],
+                axis=1
+            )
+
+            # Supprimer les colonnes en doublon éventuelles
+            df_result = df_result.loc[:, ~df_result.columns.duplicated()]
+
+            df_result["sum"] = df_result["sum"] + df_result["count"]*(U + L)/2
+
             # Calcul de la moyenne
             df_result["mean"] = df_result.apply(
                 lambda row: np.inf if row["count"] == 0 else row["sum"] / row["count"],
@@ -71,12 +101,14 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
             if req["type"] == "Comptage":
                 df_result = results_comptage[key_query]
 
-            if req["type"] == "Total":
-                variable = req["variable"]
-                df_result = results_total_par_variable[variable][key_query]
-
             if req["type"] == "Quantile":
                 df_result = current_results[key_query]
+
+        df_result = df_result.round(1)
+
+        # Remplace -0.0 par 0.0 dans toutes les colonnes numériques à virgule
+        for col in df_result.select_dtypes(include=["float"]).columns:
+            df_result[col] = df_result[col].apply(lambda x: 0.0 if x == -0.0 else x)
 
         final_results[key] = df_result
 
@@ -108,7 +140,7 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
 
     results_store.set(final_results)
 
-    return ui.accordion(*panels)
+    return ui.accordion(*panels, open=True)
 
 
 def make_radio_buttons(request, filter_type: list[str]):
@@ -225,7 +257,7 @@ def affichage_requete(requetes, dataset):
 
         # Panneau d'accordéon contenant la ligne
         panels.append(
-            ui.accordion_panel(f"{key} — {req.get('type', '—')}", content_row, open=True)
+            ui.accordion_panel(f"{key} — {req.get('type', '—')}", content_row)
         )
 
-    return ui.accordion(*panels)
+    return ui.accordion(*panels, open=True)

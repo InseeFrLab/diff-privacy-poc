@@ -330,7 +330,7 @@ def mettre_a_jour_results_store(x_df_info, data_query, results_store, col_source
     return results_store_modifié
 
 
-def calcul_MCG(results_store, modalite, dict_query, type_req):
+def calcul_MCG(results_store, modalite, dict_query, type_req, pos=True):
 
     liste_query = [query['groupement'] for query in dict_query.values()]
 
@@ -355,14 +355,22 @@ def calcul_MCG(results_store, modalite, dict_query, type_req):
         # Contraintes
 
         if R.shape[0] == 0:
-            constraints = [
-                beta >= 0
-            ]
+            if pos:
+                constraints = [
+                    beta >= 0
+                ]
+            else:
+                constraints = []
         else:
-            constraints = [
-                R @ beta == 0,
-                beta >= 0
-            ]
+            if pos:
+                constraints = [
+                    R @ beta == 0,
+                    beta >= 0
+                ]
+            else:
+                constraints = [
+                    R @ beta == 0
+                ]
 
         # Problème
         problem = cp.Problem(objective, constraints)
@@ -569,7 +577,7 @@ def get_weights(request, input) -> dict:
 
     # Étape 3 : division par 2 des poids de type "Moyenne"
     for k in weights:
-        if request[k].get("type") == "Moyenne":
+        if request[k].get("type") in ["Moyenne", "Total"]:
             weights[k] /= 2
 
     return weights
