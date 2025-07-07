@@ -46,6 +46,7 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
             )
             variable = req["variable"]
             L, U = req["bounds"]
+            m = (U + L) / 2
 
             df_result_comptage = results_comptage[key_query_comptage]
             df_result_total = results_total_par_variable[variable][key_query_total]
@@ -60,7 +61,7 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
             # Supprimer les colonnes en doublon éventuelles
             df_result = df_result.loc[:, ~df_result.columns.duplicated()]
 
-            df_result["sum"] = df_result["sum"] + df_result["count"]*(U + L)/2
+            df_result["sum"] = df_result["sum"] + df_result["count"] * m
 
         elif req["type"] == "Moyenne":
             key_query_comptage = next(
@@ -73,6 +74,7 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
             )
             variable = req["variable"]
             L, U = req["bounds"]
+            m = (U + L) / 2
 
             df_result_comptage = results_comptage[key_query_comptage]
             df_result_total = results_total_par_variable[variable][key_query_total]
@@ -87,11 +89,60 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
             # Supprimer les colonnes en doublon éventuelles
             df_result = df_result.loc[:, ~df_result.columns.duplicated()]
 
-            df_result["sum"] = df_result["sum"] + df_result["count"]*(U + L)/2
+            df_result["sum"] = df_result["sum"] + df_result["count"] * m
 
             # Calcul de la moyenne
             df_result["mean"] = df_result.apply(
                 lambda row: np.inf if row["count"] == 0 else row["sum"] / row["count"],
+                axis=1
+            )
+
+        elif req["type"] == "Ratio":
+            key_query_comptage = next(
+                (k for k, v in data_query.items() if key in v["req"] and v["type"] == "Comptage"),
+                None  # valeur par défaut si rien n'est trouvé
+            )
+            variable_num = req["variable"]
+            variable_denom = req["variable_denominateur"]
+
+            L, U = req["bounds"]
+            m_num = (U + L) / 2
+
+            L, U = req["bounds_denominateur"]
+            m_denom = (U + L) / 2
+
+            key_query_total_num = next(
+                (k for k, v in data_query.items() if key in v["req"] and v["type"] == "Total" and v["variable"] == variable_num),
+                None
+            )
+            key_query_total_denom = next(
+                (k for k, v in data_query.items() if key in v["req"] and v["type"] == "Total" and v["variable"] == variable_denom),
+                None
+            )
+
+            df_result_comptage = results_comptage[key_query_comptage]
+            df_result_total_num = results_total_par_variable[variable_num][key_query_total_num].copy()
+            df_result_total_num.rename(columns={"sum": "sum_num"}, inplace=True)
+            df_result_total_denom = results_total_par_variable[variable_denom][key_query_total_denom].copy()
+            df_result_total_denom.rename(columns={"sum": "sum_denom"}, inplace=True)
+
+            # On concatène horizontalement sur l’index (corrigé)
+            df_result = pd.concat(
+                [df_result_total_num.reset_index(drop=True),
+                df_result_total_denom.reset_index(drop=True),
+                df_result_comptage.reset_index(drop=True)],
+                axis=1
+            )
+
+            # Supprimer les colonnes en doublon éventuelles
+            df_result = df_result.loc[:, ~df_result.columns.duplicated()]
+
+            df_result["sum_num"] = df_result["sum_num"] + df_result["count"] * m_num
+            df_result["sum_denom"] = df_result["sum_denom"] + df_result["count"] * m_denom
+
+            # Calcul de la moyenne
+            df_result["ratio"] = df_result.apply(
+                lambda row: np.inf if row["sum_denom"] == 0 else row["sum_num"] / row["sum_denom"],
                 axis=1
             )
 
@@ -145,7 +196,7 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
 
 def make_radio_buttons(request, filter_type: list[str]):
     radio_buttons = []
-    priorite = {"Comptage": "2", "Total": "2", "Moyenne": "1", "Quantile": "3"}
+    priorite = {"Comptage": "2", "Total": "2", "Moyenne": "1", "Ratio": "1","Quantile": "3"}
     for key, req in request.items():
         if req["type"] in filter_type:
             radio_buttons_id = key

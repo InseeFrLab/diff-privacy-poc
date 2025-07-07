@@ -4,107 +4,55 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.graph_objects as go
-import plotly.colors as pc
 import networkx as nx
 from itertools import combinations
+import pandas as pd
 
 
-def create_grouped_barplot_cv(df):
-    fig = go.Figure()
+def create_barplot(df: pd.DataFrame, x_col: str, y_col: str, hoover: str = None, color: str = None) -> go.Figure:
+    """
+    Génère un histogramme horizontal avec Plotly, en personnalisant la couleur des barres
+    et les infobulles en fonction des colonnes fournies.
 
-    fig.update_layout(
-        plot_bgcolor='white',
-        margin=dict(t=40, r=30, l=60, b=60),
-        xaxis=dict(showgrid=True, gridcolor='lightgray', linecolor='black', linewidth=1, mirror=True),
-        yaxis=dict(showgrid=True, gridcolor='lightgray', linecolor='black', linewidth=1, mirror=True),
-    )
+    Paramètres
+    ----------
+    df : pd.DataFrame
+        Le tableau de données à représenter.
+    x_col : str
+        Le nom de la colonne contenant les catégories (axe des ordonnées).
+    y_col : str
+        Le nom de la colonne contenant les valeurs numériques (axe des abscisses).
+    hoover : str, optionnel
+        Le nom de la colonne à afficher dans les infobulles (texte survolé).
+    color : str, optionnel
+        Le nom de la colonne ou une valeur utilisée pour définir la couleur des barres.
 
-    if df.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=[0], y=[0], mode="text",
-                text=["Aucune donnée"],
-                textposition="middle center",
-                showlegend=False
-            )
-        )
-        return fig
-
-    requetes_uniques = df["requête"].unique()
-    color_palette = pc.qualitative.Plotly
-    color_map = {req: color_palette[i % len(color_palette)] for i, req in enumerate(requetes_uniques)}
-
-    for req in requetes_uniques:
-        sous_df = df[df["requête"] == req]
-
-        # Texte personnalisé à afficher sur les barres
-        custom_text = [
-            f"{label}<br>CV : {cv:.1f}%" for label, cv in zip(sous_df["label"], sous_df["cv (%)"])
-        ]
-
-        fig.add_trace(
-            go.Bar(
-                x=sous_df["cv (%)"],
-                y=sous_df["label"],
-                name=req,
-                orientation='h',
-                marker=dict(
-                    color=color_map[req],
-                    line=dict(width=1, color="black"),
-                    opacity=0.85,
-                ),
-                text=custom_text,
-                textposition="auto",
-                textfont=dict(size=14),
-                hovertemplate=(
-                    f"<b>Requête : {req}</b><br>"
-                    "CV : %{x:.2f}%<br>"
-                    "%{y}<extra></extra>"
-                ),
-            )
-        )
-
-    fig.update_layout(
-        barmode='group',
-        xaxis_title="Coefficient de variation (%)",
-        yaxis_title="",
-        plot_bgcolor='white',
-        margin=dict(t=40, r=30, l=60, b=60),
-        xaxis=dict(showgrid=True, gridcolor='lightgray', linecolor='black', linewidth=1, mirror=True),
-        yaxis=dict(showgrid=True, gridcolor='lightgray', linecolor='black', linewidth=1, mirror=True),
-        legend=dict(title="Requête", orientation="v", x=1.02, y=1),
-    )
-
-    return fig
-
-
-def create_barplot(df, x_col, y_col, hoover, color):
+    Retourne
+    --------
+    fig : go.Figure
+        Une figure Plotly contenant l'histogramme horizontal.
+    """
     fig = go.Figure()
 
     if not df.empty:
-        # Déterminer les couleurs en fonction du contenu de `hoover`
         if hoover is not None and hoover in df.columns:
             hover_texts = []
             colors = []
-            for cross, color, val in zip(df[hoover], df[color], df[y_col]):
-                # Déterminer le texte
-                if isinstance(val, (int, float)):
-                    val_text = f"{val:.1f}"
-                else:
-                    val_text = str(val)
+            for cross, colval, val in zip(df[hoover], df[color], df[y_col]):
+                val_text = f"{val:.1f}" if isinstance(val, (int, float)) else str(val)
                 hover_texts.append(f"{cross}<br>{y_col}: {val_text}")
 
-                # Déterminer la couleur
-                if color == "Aucun":
+                # Définition des couleurs
+                if colval == "Aucun":
                     colors.append("darkgreen")
-                elif isinstance(color, str):
+                elif isinstance(colval, str):
                     colors.append("steelblue")
-                elif isinstance(color, tuple) and len(color) == 2:
+                elif isinstance(colval, tuple) and len(colval) == 2:
                     colors.append("darkorange")
-                elif isinstance(color, tuple) and len(color) == 3:
+                elif isinstance(colval, tuple) and len(colval) == 3:
                     colors.append("firebrick")
                 else:
-                    colors.append("gray")  # fallback par sécurité
+                    colors.append("gray")
         else:
             hover_texts = [
                 f"{y_col}: {val:.2f}" if isinstance(val, (int, float)) else f"{y_col}: {val}"
@@ -112,9 +60,9 @@ def create_barplot(df, x_col, y_col, hoover, color):
             ]
             colors = ["steelblue"] * len(df)
 
-        bar_args = dict(
-            x=df[y_col],  # valeurs numériques
-            y=df[x_col],  # catégories
+        fig.add_trace(go.Bar(
+            x=df[y_col],
+            y=df[x_col],
             orientation="h",
             marker=dict(
                 color=colors,
@@ -124,15 +72,12 @@ def create_barplot(df, x_col, y_col, hoover, color):
             text=hover_texts,
             hovertemplate="%{text}<extra></extra>",
             textposition="auto",
-            textfont=dict(color="white", size=18)
-        )
-
-        fig.add_trace(go.Bar(**bar_args))
+            textfont=dict(color="white", size=18),
+        ))
     else:
         fig.add_trace(
             go.Scatter(
-                x=[0],
-                y=[0],
+                x=[0], y=[0],
                 mode="text",
                 text=["Aucune donnée"],
                 textposition="middle center",
@@ -152,11 +97,24 @@ def create_barplot(df, x_col, y_col, hoover, color):
     return fig
 
 
-def create_histo_plot(df, quantile_alpha):
+def create_histo_plot(df: pd.DataFrame, quantile_alpha: float):
     """
-    Affiche un histogramme de df['body_mass_g'] avec une ligne verticale
-    au quantile `quantile_alpha`.
+    Affiche un histogramme des valeurs de la variable 'body_mass_g', accompagné
+    d'une ligne verticale représentant un quantile donné.
+
+    Paramètres
+    ----------
+    df : pd.DataFrame
+        Le tableau de données contenant une colonne 'body_mass_g'.
+    quantile_alpha : float
+        Le niveau de quantile à afficher (par exemple, 0.5 pour la médiane).
+
+    Retourne
+    --------
+    fig : matplotlib.figure.Figure
+        La figure contenant l'histogramme avec la ligne de quantile.
     """
+
     quantile_val = np.quantile(df['body_mass_g'].dropna(), quantile_alpha)
     fig, ax = plt.subplots()
     sns.histplot(df['body_mass_g'], stat="percent", bins=40, color='lightcoral', ax=ax)
@@ -167,7 +125,23 @@ def create_histo_plot(df, quantile_alpha):
     return fig
 
 
-def create_fc_emp_plot(df, alpha):
+def create_fc_emp_plot(df: pd.DataFrame, alpha: float):
+    """
+    Trace la fonction de répartition empirique (CDF) de la variable 'body_mass_g',
+    avec une annotation visuelle du quantile à un niveau donné.
+
+    Paramètres
+    ----------
+    df : pd.DataFrame
+        Le tableau de données contenant une colonne 'body_mass_g'.
+    alpha : float
+        Le niveau du quantile à représenter sur la CDF (entre 0 et 1).
+
+    Retourne
+    --------
+    fig : matplotlib.figure.Figure
+        La figure contenant la fonction de répartition empirique avec une annotation du quantile.
+    """
     sorted_df = np.sort(df['body_mass_g'])
     cdf = np.arange(1, len(df) + 1) / len(df)
     quantile_val = np.quantile(df['body_mass_g'].dropna(), alpha)
@@ -182,7 +156,33 @@ def create_fc_emp_plot(df, alpha):
     return fig
 
 
-def create_score_plot(df, alpha, epsilon, cmin, cmax, cstep):
+def create_score_plot(df: pd.DataFrame, alpha: float, epsilon: float, cmin: float, cmax: float, cstep: int) -> go.Figure:
+    """
+    Affiche les scores bruités de candidats quantiles selon un mécanisme de Gumbel 
+    (basé sur la confidentialité différentielle), avec leurs intervalles de confiance 
+    à 99 %, en distinguant les candidats qui chevauchent ou non celui du score minimum.
+
+    Paramètres
+    ----------
+    df : pd.DataFrame
+        Le tableau de données contenant une colonne 'body_mass_g'.
+    alpha : float
+        Le niveau de quantile cible (entre 0 et 1).
+    epsilon : float
+        Le paramètre de confidentialité différentielle (plus il est grand, moins il y a de bruit).
+    cmin : float
+        Valeur minimale parmi les candidats quantiles.
+    cmax : float
+        Valeur maximale parmi les candidats quantiles.
+    cstep : int
+        Nombre de pas (discrétisation) entre `cmin` et `cmax`.
+
+    Retourne
+    --------
+    fig : go.Figure
+        Une figure Plotly représentant les scores bruités des candidats avec
+        leurs intervalles de confiance, en distinguant les chevauchements.
+    """
     candidats = np.linspace(cmin, cmax, cstep + 1).tolist()
     scores, sensi = manual_quantile_score(df['body_mass_g'], candidats, alpha=alpha, et_si=True)
     low_q, high_q = gumbel_r.ppf([0.005, 0.995], loc=0, scale=2 * sensi / epsilon)
@@ -226,8 +226,6 @@ def create_score_plot(df, alpha, epsilon, cmin, cmax, cstep):
 
 
 def create_proba_plot(df, alpha, epsilon, cmin, cmax, cstep):
-    import numpy as np
-    import plotly.graph_objects as go
 
     candidats = np.linspace(cmin, cmax, cstep + 1).tolist()
     scores, sensi = manual_quantile_score(df['body_mass_g'], candidats, alpha=alpha, et_si=True)

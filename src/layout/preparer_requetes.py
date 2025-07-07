@@ -30,7 +30,7 @@ def bloc_ajout_requete():
         ui.h4("➕ Ajouter une requête"),
         ui.br(),
         ui.row(
-            ui.column(3, ui.input_selectize("type_req", "Type de requête:", choices=["Comptage", "Total", "Moyenne", "Quantile"], selected="Comptage")),
+            ui.column(3, ui.input_selectize("type_req", "Type de requête:", choices=["Comptage", "Total", "Moyenne", "Ratio", "Quantile"], selected="Comptage")),
             ui.column(3, ui.input_text("filtre", "Condition de filtrage:"))
         ),
         ui.br(),
@@ -39,6 +39,12 @@ def bloc_ajout_requete():
             ui.column(3, ui.input_selectize("group_by", "Regrouper par:", choices={}, multiple=True))
         ),
         ui.br(),
+        ui.panel_conditional(
+            "input.type_req == 'Ratio'",
+            ui.row(
+                ui.column(3, ui.input_selectize("variable_denominateur", "Variable au dénominateur:", choices={}, options={"plugins": ["clear_button"]}))
+            ),
+        ),
         ui.panel_conditional(
             "input.type_req == 'Quantile'",
             ui.row(

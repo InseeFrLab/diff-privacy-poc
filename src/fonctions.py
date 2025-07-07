@@ -35,69 +35,48 @@ def intervalle_confiance_quantile(dataset, req, epsilon):
     candidats = np.linspace(bounds_min, bounds_max, nb_candidats + 1)
     precisions = []
 
-    # Si pas de group_by, on applique directement
+    def process_data(data_variable):
+        if len(data_variable) == 0:
+            return None
+
+        scores, sensi = manual_quantile_score(
+            data_variable,
+            candidats,
+            alpha=alpha,
+            et_si=True
+        )
+
+        proba_non_norm = np.exp(-epsilon * scores / (2 * sensi))
+        proba = proba_non_norm / proba_non_norm.sum()
+
+        sorted_indices = np.argsort(proba)[::-1]
+        sorted_proba = proba[sorted_indices]
+        sorted_candidats = candidats[sorted_indices]
+
+        cumulative = np.cumsum(sorted_proba)
+        top95_mask = cumulative <= 0.95
+        if not np.all(top95_mask):
+            top95_mask[np.argmax(cumulative > 0.95)] = True
+
+        candidats_top95 = sorted_candidats[top95_mask]
+        return np.max(candidats_top95) - np.min(candidats_top95)
+
     if by is None:
         data_variable = dataset[variable].to_numpy()
+        return process_data(data_variable)
 
-        scores, sensi = manual_quantile_score(
-            data_variable,
-            candidats,
-            alpha=alpha,
-            et_si=True
-        )
-
-        proba_non_norm = np.exp(-epsilon * scores / (2 * sensi))
-        proba = proba_non_norm / np.sum(proba_non_norm)
-
-        sorted_indices = np.argsort(proba)[::-1]
-        sorted_proba = np.array(proba)[sorted_indices]
-        sorted_candidats = np.array(candidats)[sorted_indices]
-
-        cumulative = np.cumsum(sorted_proba)
-        top95_mask = cumulative <= 0.95
-        if not np.all(top95_mask):
-            top95_mask[np.argmax(cumulative > 0.95)] = True
-
-        candidats_top95 = sorted_candidats[top95_mask]
-        precision_val = np.max(candidats_top95) - np.min(candidats_top95)
-        return precision_val
-
-    # Si group_by, on boucle sur chaque modalité
+    # group_by present
     grouped = dataset.group_by(by)
-
     for _, group_df in grouped:
         data_variable = group_df[variable].to_numpy()
-
-        if len(data_variable) == 0:
-            continue  # éviter les groupes vides
-
-        scores, sensi = manual_quantile_score(
-            data_variable,
-            candidats,
-            alpha=alpha,
-            et_si=True
-        )
-
-        proba_non_norm = np.exp(-epsilon * scores / (2 * sensi))
-        proba = proba_non_norm / np.sum(proba_non_norm)
-
-        sorted_indices = np.argsort(proba)[::-1]
-        sorted_proba = np.array(proba)[sorted_indices]
-        sorted_candidats = np.array(candidats)[sorted_indices]
-
-        cumulative = np.cumsum(sorted_proba)
-        top95_mask = cumulative <= 0.95
-        if not np.all(top95_mask):
-            top95_mask[np.argmax(cumulative > 0.95)] = True
-
-        candidats_top95 = sorted_candidats[top95_mask]
-        precision_val = np.max(candidats_top95) - np.min(candidats_top95)
-        precisions.append(precision_val)
+        precision_val = process_data(data_variable)
+        if precision_val is not None:
+            precisions.append(precision_val)
 
     return np.mean(precisions) if precisions else None
 
 
-def generate_yaml_metadata_from_lazyframe_as_string(df: pl.DataFrame, dataset_name: str = "dataset"):
+def generate_yaml_metadata_from_lazyframe_as_string(df: pl.DataFrame, dataset_name: str = "dataset") -> str:
     metadata = {
         'dataset_name': dataset_name,
         'n_rows': df.height,
@@ -114,15 +93,19 @@ def generate_yaml_metadata_from_lazyframe_as_string(df: pl.DataFrame, dataset_na
             'missing': int(series.null_count())
         }
 
-        if dtype in (pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+        if dtype in {pl.Int8, pl.Int16, pl.Int32, pl.Int64,
                      pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
-                     pl.Float32, pl.Float64):
-            col_meta.update({
-                'min': round(float(series.min()), 2),
-                'max': round(float(series.max()), 2)
-            })
+                     pl.Float32, pl.Float64}:
+            # Sécurisation min/max sur séries vides
+            if series.is_empty():
+                col_meta.update({'min': None, 'max': None})
+            else:
+                col_meta.update({
+                    'min': round(float(series.min()), 2),
+                    'max': round(float(series.max()), 2)
+                })
 
-        elif dtype == pl.Utf8 or dtype == pl.Categorical:
+        elif dtype in {pl.Utf8, pl.Categorical}:
             col_meta['unique_values'] = int(series.n_unique())
 
         metadata['columns'][col] = col_meta
@@ -131,47 +114,60 @@ def generate_yaml_metadata_from_lazyframe_as_string(df: pl.DataFrame, dataset_na
     return yaml_str
 
 
-# Calcul de p
+# ------------------------------------------
+# Utils: produit des modalités pour un frozenset
 def produit_modalites(fset, nb_modalite):
     if not fset:
         return 1
     return reduce(operator.mul, (nb_modalite[v] for v in fset), 1)
 
 
-def MCG(liste_request, modalite):
-    # Trouver les feuilles
-    feuilles = [req for req in liste_request if not any((req < other) for other in liste_request)]
+# ------------------------------------------
+# Construction des matrices X (design) et R (contraintes)
+def MCG(liste_requests, modalite):
+    """
+    Construit la matrice de design X, la matrice de contraintes R,
+    et un DataFrame annoté des requêtes (X_df_infos).
 
+    Args:
+        liste_requests : liste de frozensets représentant les groupements.
+        modalite : dict {variable: [modalités]}.
+
+    Returns:
+        X : matrice numpy (n x p)
+        R : matrice numpy (r x p) des contraintes linéaires
+        X_df_infos : DataFrame avec informations sur chaque ligne de X
+    """
     nb_modalite = {k: len(v) for k, v in modalite.items()}
 
-    p = sum(produit_modalites(fset, nb_modalite) for fset in feuilles)
-    n = sum(produit_modalites(fset, nb_modalite) for fset in liste_request)
+    # Les feuilles sont les groupements qui ne sont inclus dans aucun autre
+    feuilles = [req for req in liste_requests if not any(req < other for other in liste_requests)]
 
-    # Table de correspondance beta
+    p = sum(produit_modalites(fset, nb_modalite) for fset in feuilles)
+    n = sum(produit_modalites(fset, nb_modalite) for fset in liste_requests)
+
+    # Construction des noms des coefficients beta (liste)
     beta_names = []
     df_par_requete = {}
 
-    def beta_label(var_names, values):
-        return "β[" + ", ".join(f"{v}={val}" for v, val in zip(var_names, values)) + "]"
+    def beta_label(vars_names, values):
+        return "β[" + ", ".join(f"{v}={val}" for v, val in zip(vars_names, values)) + "]"
 
+    # Pré-calcul des DataFrames pour chaque feuille (modalités et noms beta)
     for req in feuilles:
         sorted_vars = sorted(req)
         domains = [range(nb_modalite[v]) for v in sorted_vars]
-        combinations_vals = list(product(*domains))
-
-        betas = [beta_label(sorted_vars, vals) for vals in combinations_vals]
+        combos = list(product(*domains))
+        betas = [beta_label(sorted_vars, vals) for vals in combos]
         beta_names.extend(betas)
+        df_par_requete[req] = pd.DataFrame(combos, columns=sorted_vars).assign(value=betas)
 
-        df = pd.DataFrame(combinations_vals, columns=sorted_vars)
-        df["value"] = betas
-        df_par_requete[req] = df
-
-    # Matrice X (DataFrame annoté)
+    # Construction de X et X_df_infos
     X = np.zeros((n, p), dtype=int)
     ligne_courante = 0
     request_lines = []
 
-    for req in liste_request:
+    for req in liste_requests:
         for max_req in feuilles:
             if req <= max_req:
                 df = df_par_requete[max_req].copy()
@@ -181,60 +177,52 @@ def MCG(liste_request, modalite):
                     grouped = pd.DataFrame({'value': [' + '.join(df["value"])]})
 
                 for _, row in grouped.iterrows():
-                    beta_sum = row["value"]
-                    for b in beta_sum.split(" + "):
-                        j = beta_names.index(b)
-                        X[ligne_courante, j] = 1
+                    for b in row["value"].split(" + "):
+                        X[ligne_courante, beta_names.index(b)] = 1
+
                     if len(req) > 0:
                         dico_modalites = row[sorted(req)].to_dict()
-                        dico_modalites_nom = {
-                            var: modalite[var][val] if pd.notna(val) else None
-                            for var, val in dico_modalites.items()
-                        }
+                        dico_modalites_nom = {var: modalite[var][val] for var, val in dico_modalites.items()}
                     else:
                         dico_modalites_nom = {}
 
                     request_lines.append({"requête": req, **dico_modalites_nom})
-
                     ligne_courante += 1
                 break
 
     X_df_infos = pd.DataFrame(request_lines)
 
-    # Matrice R
+    # Construction matrice R (contraintes) : égalité entre coefficients beta sur intersections
     R_rows = []
 
     for req1, req2 in combinations(feuilles, 2):
-        intersection = req1 & req2
-        df1 = df_par_requete[req1]
-        df2 = df_par_requete[req2]
+        inter = req1 & req2
+        df1, df2 = df_par_requete[req1], df_par_requete[req2]
 
-        if not intersection:
-            betas1 = df1["value"].tolist()
-            betas2 = df2["value"].tolist()
-
+        if not inter:
             row = np.zeros(len(beta_names))
-            for b in betas1:
+            for b in df1["value"]:
                 row[beta_names.index(b)] = 1
-            for b in betas2:
-                row[beta_names.index(b)] -= 1
+            for b in df2["value"]:
+                row[beta_names.index(b)] = -1
             R_rows.append(row)
             continue
 
-        grouped1 = df1.groupby(list(intersection))["value"].apply(list)
-        grouped2 = df2.groupby(list(intersection))["value"].apply(list)
+        grouped1 = df1.groupby(list(inter))["value"].apply(list)
+        grouped2 = df2.groupby(list(inter))["value"].apply(list)
         common_modalities = grouped1.index.intersection(grouped2.index)
 
         for modality in common_modalities:
-            betas1 = grouped1[modality]
-            betas2 = grouped2[modality]
             row = np.zeros(len(beta_names))
-            for b in betas1:
+            for b in grouped1[modality]:
                 row[beta_names.index(b)] = 1
-            for b in betas2:
-                row[beta_names.index(b)] -= 1
+            for b in grouped2[modality]:
+                row[beta_names.index(b)] = -1
             R_rows.append(row)
 
+    R = np.vstack(R_rows) if R_rows else np.empty((0, len(beta_names)))
+
+    # Supprime les contraintes dépendantes (ligne linéairement dépendante)
     def remove_dependent_rows_qr(R, tol=1e-10):
         if R.shape[0] == 0:
             return R
@@ -242,155 +230,144 @@ def MCG(liste_request, modalite):
         independent = np.abs(R_qr).sum(axis=1) > tol
         return R[independent]
 
-    R = np.vstack(R_rows) if R_rows else np.empty((0, len(beta_names)))
     R = remove_dependent_rows_qr(R)
 
     return X, R, X_df_infos
 
-
+# ------------------------------------------
+# Intégration des valeurs observées et variances dans le DataFrame info
 def ajouter_colonne_value(x_df_info, data_query, results_store):
-    x_df_info = x_df_info.copy()
-    x_df_info["value"] = np.nan
-    x_df_info["sigma2"] = np.nan
+    """
+    Ajoute les colonnes "value" et "sigma2" dans X_df_infos à partir des résultats
+    et des requêtes.
+    """
+    X_df_infos = x_df_info.copy()
+    X_df_infos["value"] = np.nan
+    X_df_infos["sigma2"] = np.nan
 
     for key, df_valeurs in results_store.items():
-
         groupement = data_query[key]["groupement"]
 
-        # Détecter automatiquement la colonne de valeur
-        possible_value_cols = ['count', 'sum', 'value']
-        valeur_col = next((col for col in possible_value_cols if col in df_valeurs.columns), None)
+        # Identifier la colonne valeur dans le DataFrame
+        colonnes_valeur = ['count', 'sum', 'value']
+        valeur_col = next((col for col in colonnes_valeur if col in df_valeurs.columns), None)
         if valeur_col is None:
-            raise ValueError(f"Aucune colonne de valeur trouvée dans {key}")
+            raise ValueError(f"Aucune colonne de valeur trouvée dans le résultat '{key}'.")
 
-        # Filtrage de x_df_info pour le groupement
-        masque = x_df_info["requête"] == groupement
-
-        if not any(masque):
+        masque = X_df_infos["requête"] == groupement
+        if not masque.any():
             continue
 
-        sous_df = x_df_info[masque].copy()
+        sous_df = X_df_infos[masque]
 
         if len(groupement) == 0:
-            # Cas sans groupement : valeur unique
             if len(df_valeurs) != 1:
-                raise ValueError(f"Le résultat pour '{key}' sans groupement contient plusieurs lignes.")
+                raise ValueError(f"Résultat sans groupement '{key}' contient plusieurs lignes.")
             valeur = df_valeurs[valeur_col].iloc[0]
-            x_df_info.loc[masque, "value"] = valeur
+            X_df_infos.loc[masque, "value"] = valeur
         else:
-            # Fusion classique
-            jointure = pd.merge(
-                sous_df,
-                df_valeurs,
-                how='left',
-                on=list(groupement)
-            )
-            x_df_info.loc[masque, "value"] = jointure[valeur_col].values
+            jointure = pd.merge(sous_df, df_valeurs, how='left', on=list(groupement))
+            X_df_infos.loc[masque, "value"] = jointure[valeur_col].values
 
-        x_df_info.loc[masque, "sigma2"] = data_query[key]["sigma2"]
+        X_df_infos.loc[masque, "sigma2"] = data_query[key]["sigma2"]
 
-    return x_df_info
+    return X_df_infos
 
 
+# ------------------------------------------
+# Mise à jour du dictionnaire results_store avec les valeurs recalculées
 def mettre_a_jour_results_store(x_df_info, data_query, results_store, col_source="value_MCG", col_cible="count"):
-    # Copie du results_store mis à jour
-    results_store_modifié = {}
+    """
+    Met à jour les DataFrames dans results_store avec les valeurs calculées.
+    """
+    results_modif = {}
 
     for key, df_valeurs in results_store.items():
-
         groupement = data_query[key]["groupement"]
-
-        # Filtrage de x_df_info pour le groupement
         masque = x_df_info["requête"] == groupement
-        if not any(masque):
+        if not masque.any():
             continue
 
-        sous_df_info = x_df_info[masque].copy()
+        sous_df_info = x_df_info[masque]
 
         if len(groupement) == 0:
-            # Aucun groupement : valeur unique
             if len(sous_df_info) != 1 or len(df_valeurs) != 1:
-                print(sous_df_info)
-                print(df_valeurs)
-                raise ValueError(f"Incohérence pour '{key}' sans groupement : {len(sous_df_info)} dans x_df_info, {len(df_valeurs)} dans df_valeurs.")
+                raise ValueError(f"Incohérence dans '{key}': {len(sous_df_info)} lignes dans X_df_infos, {len(df_valeurs)} dans df_valeurs.")
             valeur = sous_df_info[col_source].iloc[0]
             df_valeurs[col_cible] = [valeur]
         else:
-            # Jointure sur les colonnes du groupement
-            jointure = pd.merge(
-                df_valeurs,
-                sous_df_info[list(groupement) + [col_source]],
-                how="left",
-                on=list(groupement)
-            )
+            jointure = pd.merge(df_valeurs, sous_df_info[list(groupement) + [col_source]], how="left", on=list(groupement))
             df_valeurs[col_cible] = jointure[col_source]
 
-        results_store_modifié[key] = df_valeurs
+        results_modif[key] = df_valeurs
 
-    return results_store_modifié
+    return results_modif
 
 
+# ------------------------------------------
+# Calcul des coefficients beta via moindres carrés pondérés sous contraintes
 def calcul_MCG(results_store, modalite, dict_query, type_req, pos=True):
+    """
+    Calcule les coefficients beta via MCG et met à jour results_store.
 
-    liste_query = [query['groupement'] for query in dict_query.values()]
+    Args:
+        results_store : dict de DataFrames des résultats initiaux.
+        modalite : dict des modalités.
+        dict_query : dict des requêtes avec infos.
+        type_req : nom de la colonne cible à mettre à jour dans results_store.
+        pos : bool, impose beta >= 0 si True.
 
-    X, R, X_df_infos = MCG(liste_query, modalite)
+    Returns:
+        dict de DataFrames mis à jour.
+    """
+    liste_requests = [d["groupement"] for d in dict_query.values()]
+    X, R, X_df_infos = MCG(liste_requests, modalite)
+    X_df_infos = ajouter_colonne_value(X_df_infos, dict_query, results_store)
 
-    n, p = X.shape
+    # Pondération par sigma2
+    sigma = X_df_infos["sigma2"].values
+    W = np.diag(1 / sigma)
+    y = X_df_infos["value"].values
+    Omega_inv = W.T @ W
+    Omega_inv = Omega_inv / Omega_inv.diagonal().max()  # Normalisation
 
-    if p > 0:
+    # Résolution avec cvxpy
+    beta = cp.Variable(X.shape[1])
+    objective = cp.Minimize(cp.quad_form(X @ beta - y, Omega_inv))
+    contraintes = []
 
-        X_df_infos = ajouter_colonne_value(X_df_infos, dict_query, results_store)
+    if pos:
+        contraintes.append(beta >= 0)
 
-        Y = np.array(X_df_infos["value"])
-        sigma2 = np.array(X_df_infos["sigma2"])
-        Omega_inv = np.diag(1 / sigma2)
-        Omega_inv /= np.max(np.diag(Omega_inv))
-        # Variables
-        beta = cp.Variable(p)
+    if R.size > 0:
+        contraintes.append(R @ beta == 0)
 
-        # Objectif : moindres carrés pondérés
-        objective = cp.Minimize(cp.quad_form(Y - X @ beta, Omega_inv))
+    prob = cp.Problem(objective, contraintes)
+    prob.solve()
 
-        # Contraintes
+    if prob.status not in ["optimal", "optimal_inaccurate"]:
+        raise RuntimeError("Problème d'optimisation non résolu")
 
-        if R.shape[0] == 0:
-            if pos:
-                constraints = [
-                    beta >= 0
-                ]
-            else:
-                constraints = []
-        else:
-            if pos:
-                constraints = [
-                    R @ beta == 0,
-                    beta >= 0
-                ]
-            else:
-                constraints = [
-                    R @ beta == 0
-                ]
+    beta_val = beta.value
 
-        # Problème
-        problem = cp.Problem(objective, constraints)
-        problem.solve()
-        print("status:", problem.status)
-        X_beta = X @ beta.value
+    # Ajout dans X_df_infos des valeurs prédites par MCG
+    X_df_infos[type_req + "_MCG"] = X @ beta_val
 
-        X_df_infos["value_MCG"] = X_beta
-        print(X_df_infos)
-
-    return mettre_a_jour_results_store(X_df_infos, dict_query, results_store, col_source="value_MCG", col_cible=type_req)
+    # Mise à jour results_store
+    print(X_df_infos)
+    results_modif = mettre_a_jour_results_store(X_df_infos, dict_query, results_store, col_source=type_req + "_MCG", col_cible=type_req)
+    return results_modif
 
 
-def optimization_boosted(dict_query, modalite):
-
-    liste_query = [query['groupement'] for query in dict_query.values()]
-
-    X, R, X_df_infos = MCG(liste_query, modalite)
-
+# ------------------------------------------
+# Estimation de l'incertitude (variance corrigée) via méthode boostée
+def optimization_boosted(modalite, dict_query):
+    """
+    Calcule la variance corrigée de beta sous contraintes, met à jour dict_query avec 'scale'.
+    """
+    liste_requests = [d["groupement"] for d in dict_query.values()]
     nb_modalite = {k: len(v) for k, v in modalite.items()}
+    X, R, X_df_infos = MCG(liste_requests, modalite)
 
     dict_request = {key: {"nb_cellule": produit_modalites(query["groupement"], nb_modalite), "sigma2": query["sigma2"]} for key, query in dict_query.items()}
 
@@ -398,7 +375,6 @@ def optimization_boosted(dict_query, modalite):
     sigma2 = np.array(list(itertools.chain.from_iterable(
         [v["sigma2"]] * v["nb_cellule"] for v in dict_request.values()
     )))
-
     Omega_inv = np.diag(1 / sigma2)
 
     # Matrice H = X^T Omega^{-1} X
@@ -419,6 +395,7 @@ def optimization_boosted(dict_query, modalite):
     index = 0
     # Création du mapping entre frozenset (clé dans dict_request) et la clé d'origine de poids
 
+    # Calcul scale par requête
     for key in dict_request:
         nb = dict_request[key]["nb_cellule"]
         dict_query[key]["scale"] = np.sqrt(var_Xbeta_constrained[index])
@@ -427,31 +404,30 @@ def optimization_boosted(dict_query, modalite):
 
 
 def update_context(CONTEXT_PARAM, budget, requete):
+    # Séparer les poids selon le type de requête
+    poids_rho = [req["poids"] for req in requete.values() if req["type"].lower() != "quantile"]
+    poids_eps = [req["poids"] for req in requete.values() if req["type"].lower() == "quantile"]
 
-    poids_req_rho = [req["poids"] for req in requete.values() if req["type"].lower() != "quantile"]
-    poids_req_eps = [req["poids"] for req in requete.values() if req["type"].lower() == "quantile"]
-    budget_rho = budget * sum(poids_req_rho)
-    budget_eps = np.sqrt(8 * budget * sum(poids_req_eps))
+    somme_rho = sum(poids_rho)
+    somme_eps = sum(poids_eps)
 
-    if budget_rho == 0:
-        context_rho = None
-    else:
-        context_rho = dp.Context.compositor(
+    budget_rho = budget * somme_rho
+    budget_eps = np.sqrt(8 * budget * somme_eps)
+
+    def create_context(budget_val, poids):
+        if budget_val == 0:
+            return None
+        return dp.Context.compositor(
             **CONTEXT_PARAM,
-            privacy_loss=dp.loss_of(rho=budget_rho),
-            split_by_weights=poids_req_rho
+            privacy_loss=dp.loss_of(rho=budget_val) if somme_rho else dp.loss_of(epsilon=budget_val),
+            split_by_weights=poids
         )
 
-    if budget_eps == 0:
-        context_eps = None
-    else:
-        context_eps = dp.Context.compositor(
-            **CONTEXT_PARAM,
-            privacy_loss=dp.loss_of(epsilon=budget_eps),
-            split_by_weights=poids_req_eps
-        )
+    context_rho = create_context(budget_rho, poids_rho)
+    context_eps = create_context(budget_eps, poids_eps)
 
     return context_rho, context_eps
+
 
 
 def rho_from_eps_delta(epsilon, delta):
@@ -536,60 +512,62 @@ def parse_filter_string(filter_str: str) -> pl.Expr:
 
 
 def manual_quantile_score(data, candidats, alpha, et_si=False):
-    if alpha == 0:
-        alpha_num, alpha_denum = 0, 1
-    elif alpha == 0.25:
-        alpha_num, alpha_denum = 1, 4
-    elif alpha == 0.5:
-        alpha_num, alpha_denum = 1, 2
-    elif alpha == 0.75:
-        alpha_num, alpha_denum = 3, 4
-    elif alpha == 1:
-        alpha_num, alpha_denum = 1, 1
-    else:
-        alpha_num = int(np.floor(alpha * 10_000))
-        alpha_denum = 10_000
+    def get_fractional_alpha(alpha_val):
+        # Cas connus optimisés
+        known_alphas = {0: (0, 1), 0.25: (1, 4), 0.5: (1, 2), 0.75: (3, 4), 1: (1, 1)}
+        return known_alphas.get(alpha_val, (int(np.floor(alpha_val * 10_000)), 10_000))
 
+    alpha_num, alpha_denum = get_fractional_alpha(alpha)
+
+    # Si le mode "et_si" est activé, forcer la version décimale
     if et_si:
-        alpha_num = int(np.floor(alpha * 10_000))
-        alpha_denum = 10_000
+        alpha_num, alpha_denum = int(np.floor(alpha * 10_000)), 10_000
 
+    data_len = len(data)
     scores = []
+
     for c in candidats:
-        n_less = np.sum(data < c)
-        n_equal = np.sum(data == c)
-        score = alpha_denum * n_less - alpha_num * (len(data) - n_equal)
+        n_less = np.count_nonzero(data < c)
+        n_equal = np.count_nonzero(data == c)
+        score = alpha_denum * n_less - alpha_num * (data_len - n_equal)
         scores.append(abs(score))
 
-    return np.array(scores), max(alpha_num, alpha_denum - alpha_num)
+    max_alpha = max(alpha_num, alpha_denum - alpha_num)
+    return np.array(scores), max_alpha
 
 
-def get_weights(request, input) -> dict:
+def get_weights(request: dict, input) -> dict:
     # Étape 1 : récupération des poids bruts
     raw_weights = {
-        key: radio_to_weight.get(float(getattr(input, key)()), 0)
+        key: radio_to_weight.get(float(getattr(input, key)() or 0), 0)
         for key in request
     }
 
     # Étape 2 : normalisation initiale
     total = sum(raw_weights.values())
-    weights = {k: v / total for k, v in raw_weights.items()} if total > 0 else {k: 0 for k in raw_weights}
+    if total > 0:
+        weights = {k: v / total for k, v in raw_weights.items()}
+    else:
+        weights = {k: 0 for k in raw_weights}
 
-    # Étape 3 : division par 2 des poids de type "Moyenne"
-    for k in weights:
-        if request[k].get("type") in ["Moyenne", "Total"]:
-            weights[k] /= 2
+    # Étape 3 : ajustement selon le type de requête
+    adjustment_factors = {
+        "Moyenne": 2,
+        "Total": 2,
+        "Ratio": 3,
+    }
+
+    for k, v in weights.items():
+        req_type = request[k].get("type")
+        factor = adjustment_factors.get(req_type, 1)
+        weights[k] = v / factor
 
     return weights
 
 
-def load_data(path: str, storage_options):
-    if path.startswith("s3://"):
-        df = pl.read_parquet(path, storage_options=storage_options)
-    else:
-        df = pl.read_parquet(path)
 
-    if "geometry" in df.columns:
-        df = df.drop("geometry")
+def load_data(path: str, storage_options=None) -> pl.DataFrame:
+    read_kwargs = {"storage_options": storage_options} if path.startswith("s3://") else {}
+    df = pl.read_parquet(path, **read_kwargs)
 
-    return df
+    return df.drop("geometry") if "geometry" in df.columns else df

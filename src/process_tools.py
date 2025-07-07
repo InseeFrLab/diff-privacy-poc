@@ -9,41 +9,30 @@ async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dic
     current_results = {}
 
     for i, (key, query) in enumerate(dict_query.items(), start=1):
-        progress.set(i, message=f"Requête {key} — {query.get('type', '—')}", detail="Calcul en cours...")
-        # await asyncio.sleep(0.05)
+        type_req = query.get("type", "—")
+        progress.set(i, message=f"Requête {key} — {type_req}", detail="Calcul en cours...")
 
-        # resultat_dp = process_request_dp(context_rho, context_eps, key_values, query).execute()
-        resultat_dp = process_request_dp(context_rho, context_eps, key_values, query)
+        # Traitement DP
+        dp_result = process_request_dp(context_rho, context_eps, key_values, query)
         # print(resultat_dp.precision())
-        resultat_dp = resultat_dp.execute()
-        df_result = resultat_dp.release().collect()
+        dp_result = dp_result.execute()
+        df_result = dp_result.release().collect()
 
-        if query.get("type") == "Moyenne":
-            df_result = df_result.with_columns(mean=pl.col.sum / pl.col.count)
+        # Tri et réordonnancement si groupement
+        by = query.get("by")
+        if by and df_result.shape[1] > 1:
+            df_result = df_result.sort(by=by)
 
-        if query.get("by") is not None:
-            df_result = df_result.sort(by=query.get("by"))
+            first_col = df_result.columns[0]
+            other_cols = df_result.columns[1:]
+            df_result = df_result.select(other_cols + [first_col])
 
-            if query.get("type") == "Moyenne":
-                first_cols = df_result.columns[:2]            # Colonnes 0 et 1
-                middle_cols = df_result.columns[2:-1]         # Toutes les colonnes sauf les 2 premières et la dernière
-                last_col = df_result.columns[-1:]             # Colonne finale (doit être un Index, pas une chaîne)
-                new_order = middle_cols + first_cols + last_col
-                df_result = df_result.select(new_order)
-            else:
-                first_col = df_result.columns[0]
-                new_order = df_result.columns[1:] + [first_col]
-                df_result = df_result.select(new_order)
-
-        # On stocke tous les résultats dans le dictionnaire
         current_results[key] = df_result.to_pandas()
 
-    # Mise à jour une fois que tous les résultats sont prêts
     results_store.set(current_results)
 
 
 def process_request_dp(context_rho, context_eps, key_values, req):
-
     variable = req.get("variable")
     by = req.get("by")
     bounds = req.get("bounds")
@@ -66,62 +55,64 @@ def process_request_dp(context_rho, context_eps, key_values, req):
 
 
 def process_request(df: pl.LazyFrame, req: dict, use_bounds=True) -> pl.LazyFrame:
-
     variable = req.get("variable")
+    variable_denom = req.get("variable_denominateur")
     by = req.get("by")
     bounds = req.get("bounds")
+    bounds_denom = req.get("bounds_denominateur")
     filtre = req.get("filtre")
     alpha = req.get("alpha")
-    type_req = req["type"]
+    type_req = req.get("type", "").lower()
 
     if filtre:
         df = df.filter(parse_filter_string(filtre))
 
-    # Appliquer les bornes si variable et bounds sont présents
-    if variable and bounds and use_bounds:
+    # Appliquer les bornes sur la variable principale
+    if use_bounds and variable and bounds:
         L, U = bounds
-        df = df.filter((pl.col(variable) >= L) & (pl.col(variable) <= U))
+        df = df.with_columns(pl.col(variable).clip(lower_bound=L, upper_bound=U).alias(variable))
 
-    # Traitement par type de requête
-    if type_req == "count" or type_req == "Comptage":
-        if by:
-            df = df.group_by(by).agg(pl.count().alias("count"))
-        else:
-            df = df.select(pl.count())
+    # Appliquer les bornes sur le dénominateur (si ratio)
+    if use_bounds and variable_denom and bounds_denom:
+        L, U = bounds_denom
+        df = df.with_columns(pl.col(variable_denom).clip(lower_bound=L, upper_bound=U).alias(variable_denom))
 
-    elif type_req == "mean" or type_req == "Moyenne":
-        if by:
-            df = df.group_by(by).agg(
-                pl.col(variable).sum().alias("sum"),
-                pl.count().alias("count"),
-                pl.col(variable).mean().alias("mean"))
-        else:
-            df = df.select(
-                pl.col(variable).sum().alias("sum"),
-                pl.count().alias("count"),
-                pl.col(variable).mean().alias("mean"))
+    # Fonctions de traitement
+    if type_req in {"count", "comptage"}:
+        agg_exprs = [pl.count().alias("count")]
 
-    elif type_req == "sum" or type_req == "Total":
-        if by:
-            df = df.group_by(by).agg(pl.col(variable).sum().alias("sum"))
-        else:
-            df = df.select(pl.col(variable).sum().alias("sum"))
+    elif type_req in {"mean", "moyenne"}:
+        agg_exprs = [
+            pl.col(variable).sum().alias("sum"),
+            pl.count().alias("count"),
+            pl.col(variable).mean().alias("mean")
+        ]
 
-    elif type_req == "quantile" or type_req == "Quantile":
+    elif type_req in {"sum", "total"}:
+        agg_exprs = [pl.col(variable).sum().alias("sum")]
 
-        if by:
-            df = df.group_by(by).agg(
-                pl.col(variable).quantile(alpha, interpolation="nearest").alias(f"quantile_{alpha}")
-            )
-        else:
-            df = df.select(
-                pl.col(variable).quantile(alpha, interpolation="nearest").alias(f"quantile_{alpha}")
-            )
+    elif type_req in {"ratio"}:
+        agg_exprs = [
+            pl.col(variable).sum().alias("sum_num"),
+            pl.col(variable_denom).sum().alias("sum_denom")
+        ]
+
+    elif type_req in {"quantile"}:
+        agg_exprs = [
+            pl.col(variable).quantile(alpha, interpolation="nearest").alias(f"quantile_{alpha}")
+        ]
 
     else:
-        raise ValueError(f"Type de requête inconnu : {type_req}")
+        raise ValueError(f"Type de requête inconnu : {req.get('type')}")
 
+    # Appliquer aggregation selon `by`
     if by:
-        df = df.sort(by=by)
+        df = df.group_by(by).agg(agg_exprs).sort(by=by)
+    else:
+        df = df.select(agg_exprs)
+
+    # Si ratio, ajouter la colonne "ratio"
+    if type_req == "ratio":
+        df = df.with_columns((pl.col("sum_num") / pl.col("sum_denom")).alias("ratio"))
 
     return df.collect()

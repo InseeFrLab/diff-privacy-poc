@@ -16,6 +16,8 @@ def page_conception_budget():
             ui.hr(),
             bloc_budget_moyenne(),
             ui.hr(),
+            bloc_budget_ratio(),
+            ui.hr(),
             bloc_budget_quantile()
         )
     )
@@ -95,6 +97,28 @@ def bloc_budget_moyenne():
                 )),
                 ui.nav_panel("Table", ui.card(
                     ui.output_data_frame("table_moyenne"),
+                    full_screen=True
+                ))
+            ),
+            col_widths=[4, 8]
+        )
+    )
+
+
+def bloc_budget_ratio():
+    return ui.panel_well(
+        ui.layout_columns(
+            ui.card(
+                ui.card_header("Répartition du budget pour les ratio"),
+                ui.output_ui("radio_buttons_ratio"),
+            ),
+            ui.navset_card_underline(
+                ui.nav_panel("Plot", ui.card(
+                    output_widget("plot_ratio"),
+                    full_screen=True
+                )),
+                ui.nav_panel("Table", ui.card(
+                    ui.output_data_frame("table_ratio"),
                     full_screen=True
                 ))
             ),

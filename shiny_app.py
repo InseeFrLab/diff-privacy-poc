@@ -83,6 +83,7 @@ def server(input, output, session):
     onglet_actuel = reactive.Value("Conception du budget")  # Onglet par défaut
     trigger_update_budget = reactive.Value(0)
 
+
     @reactive.Calc
     def get_poids_req() -> dict[str, float]:
         poids = get_weights(requetes(), input)
@@ -93,6 +94,7 @@ def server(input, output, session):
         data_requetes = requetes()
         req_comptage_quantile = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["comptage", "quantile"]}
         req_total_moyenne = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["moyenne", "total"]}
+        req_ratio = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["ratio"]}
         query = {}
         i = 1
         for (key, request) in req_comptage_quantile.items():
@@ -128,6 +130,75 @@ def server(input, output, session):
             query_request["type"] = "Comptage"
             query_request.pop("variable", None)
             query_request.pop("bounds", None)
+
+            # Chercher s'il existe une requête identique dans query, en ignorant "req"
+            found = False
+            for k, v in query.items():
+                v_without_req = {kk: vv for kk, vv in v.items() if kk != "req"}
+                if v_without_req == query_request:
+                    query[k]["req"].append(key)
+                    found = True
+                    break
+
+            # Si aucune requête équivalente n'a été trouvée, on ajoute une nouvelle entrée
+            if not found:
+                query_request["req"] = [key]
+                cle = f"query_{i}"
+                query[cle] = query_request
+                i += 1
+
+        for (key, request) in req_ratio.items():
+            query_request = request.copy()
+            # Cas 1 : Total variable 1
+            query_request["type"] = "Total"
+            query_request.pop("variable_denominateur", None)
+            query_request.pop("bounds_denominateur", None)
+
+            # Chercher s'il existe une requête identique dans query, en ignorant "req"
+            found = False
+            for k, v in query.items():
+                v_without_req = {kk: vv for kk, vv in v.items() if kk != "req"}
+                if v_without_req == query_request:
+                    query[k]["req"].append(key)
+                    found = True
+                    break
+
+            # Si aucune requête équivalente n'a été trouvée, on ajoute une nouvelle entrée
+            if not found:
+                query_request["req"] = [key]
+                cle = f"query_{i}"
+                query[cle] = query_request
+                i += 1
+
+            # Cas 2 : Total variable 2
+            query_request = request.copy()
+            query_request["type"] = "Total"
+            query_request["variable"] = query_request.pop("variable_denominateur", None)
+            query_request["bounds"] = query_request.pop("bounds_denominateur", None)
+
+            # Chercher s'il existe une requête identique dans query, en ignorant "req"
+            found = False
+            for k, v in query.items():
+                v_without_req = {kk: vv for kk, vv in v.items() if kk != "req"}
+                if v_without_req == query_request:
+                    query[k]["req"].append(key)
+                    found = True
+                    break
+
+            # Si aucune requête équivalente n'a été trouvée, on ajoute une nouvelle entrée
+            if not found:
+                query_request["req"] = [key]
+                cle = f"query_{i}"
+                query[cle] = query_request
+                i += 1
+
+            # Cas 3 : Comptage
+            query_request = request.copy()
+            query_request["type"] = "Comptage"
+            query_request.pop("variable", None)
+            query_request.pop("bounds", None)
+            query_request.pop("variable_denominateur", None)
+            query_request.pop("bounds_denominateur", None)
 
             # Chercher s'il existe une requête identique dans query, en ignorant "req"
             found = False
@@ -273,7 +344,9 @@ def server(input, output, session):
 
                     L, U = query["bounds"]
 
-                    var_comptage = (scale_comptage * (U + L)/2)**2
+                    m = (U + L)/2
+
+                    var_comptage = (scale_comptage * m)**2
 
                     scale = np.sqrt(var_comptage + scale_total_centre**2)
 
@@ -357,8 +430,9 @@ def server(input, output, session):
                     scale_total_centre = query["scale"]
 
                     L, U = query["bounds"]
+                    m = (U + L)/2
 
-                    var_comptage = (scale_comptage * (U + L)/2)**2
+                    var_comptage = (scale_comptage * m)**2
 
                     scale_total = np.sqrt(var_comptage + scale_total_centre**2)
 
@@ -367,24 +441,26 @@ def server(input, output, session):
                     resultat = process_request(dataset().lazy(), req)
                     resultat_non_biaise = process_request(dataset().lazy(), req, use_bounds=False)
 
+                    list_var = []
                     list_cv = []
                     list_biais_relatif = []
 
                     for row_biaise, row_non_biaise in zip(resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)):
-                        total = row_biaise.get("sum", 0)
-                        total_non_biaise = row_non_biaise.get("sum", 0)
-                        count = row_biaise.get("count", 1)
+                        total_biaise = row_biaise.get("sum", 0)
+                        total = row_non_biaise.get("sum", 0)
+                        count = row_non_biaise.get("count", 1)
 
-                        cv_t = scale_total_centre / count if count != 0 else float("inf")
-                        cv_c = total * scale_comptage / (count**2) if count != 0 else float("inf")
-                        cv = 100 * np.sqrt(cv_t**2 + cv_c**2) / (total / count) if count != 0 else float("inf")
+                        var = (((count * m - total)**2) * (scale_comptage**2) + (count * scale_total_centre)**2) / count**4 if count != 0 else float("inf")
+                        cv = 100 * np.sqrt(var) / (total_biaise / count) if count != 0 else float("inf")
 
-                        biais = (total - total_non_biaise) / count
-                        biais_relatif = 100 * biais / (total_non_biaise/count)
+                        biais = (total_biaise - total) / count
+                        biais_relatif = 100 * biais / (total/count)
 
+                        list_var.append(var)
                         list_cv.append(cv)
                         list_biais_relatif.append(biais_relatif)
 
+                    var_moyenne = np.mean(var)
                     cv_moyen = np.mean(list_cv)
                     biais_relatif_moyen = np.mean(list_biais_relatif)
 
@@ -395,9 +471,10 @@ def server(input, output, session):
                         "groupement": query["groupement_style"],
                         "cv moyen (%)": cv_moyen,
                         "biais relatif moyen (%)": biais_relatif_moyen,
-                        "écart type total centré": scale_total_centre,
-                        "écart type comptage": scale_comptage,
+                        "écart type moyen estimation ": np.sqrt(var_moyenne),
                         "écart type total": scale_total,
+                        "écart type comptage": scale_comptage,
+                        "écart type total centré": scale_total_centre,
                         "écart type bruit total centré": np.sqrt(sigma2_total_centre),
                         "écart type bruit comptage": np.sqrt(sigma2_comptage),
                     })
@@ -418,6 +495,123 @@ def server(input, output, session):
     @render_widget
     def plot_moyenne():
         return create_barplot(df_moyenne(), x_col="requête", y_col="cv moyen (%)", hoover="label", color="groupement")
+
+    @reactive.Calc
+    def df_ratio() -> dict[str, dict[str, Any]]:
+        query_comptage = conception_query_count()
+        query_total_par_variable = conception_query_sum()
+        data_requetes = requetes()
+        req_ratio = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["ratio"]}
+
+        results = []
+
+        for key, req in req_ratio.items():
+
+            for query in query_comptage.values():
+
+                if key in query["req"]:
+                    sigma2_comptage = query["sigma2"]
+                    scale_comptage = query["scale"]
+                    break
+
+            variable = req["variable"]
+
+            for query in query_total_par_variable[variable].values():
+
+                if key in query["req"]:
+
+                    sigma2_total_num_centre = query["sigma2"]
+                    scale_total_num_centre = query["scale"]
+
+                    L, U = query["bounds"]
+                    m_num = (U + L)/2
+
+                    var_num_comptage = (scale_comptage * m_num)**2
+
+                    scale_total_num = np.sqrt(var_num_comptage + scale_total_num_centre**2)
+
+                    break
+
+            variable_denom = req["variable_denominateur"]
+
+            for query in query_total_par_variable[variable_denom].values():
+
+                if key in query["req"]:
+
+                    sigma2_total_denom_centre = query["sigma2"]
+                    scale_total_denom_centre = query["scale"]
+
+                    L, U = query["bounds"]
+                    m_denom = (U + L)/2
+
+                    var_denom_comptage = (scale_comptage * m_denom)**2
+
+                    scale_total_denom = np.sqrt(var_denom_comptage + scale_total_denom_centre**2)
+
+                    label = f"{variable}<br>groupement: {query["groupement_style"]}"
+
+                    resultat = process_request(dataset().lazy(), req)
+                    resultat_non_biaise = process_request(dataset().lazy(), req, use_bounds=False)
+
+                    list_var = []
+                    list_cv = []
+                    list_biais_relatif = []
+
+                    for row_biaise, row_non_biaise in zip(resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)):
+                        total_num_biaise = row_biaise.get("sum_num", 0)
+                        total_num = row_non_biaise.get("sum_num", 0)
+                        total_denom_biaise = row_biaise.get("sum_denom", 1)
+                        total_denom = row_non_biaise.get("sum_denom", 1)
+
+                        var = (((total_denom * m_num - total_num * m_denom)**2) * (scale_comptage**2) + (total_denom * scale_total_num_centre)**2 + (total_num * scale_total_denom_centre)**2) / total_denom**4 if total_denom != 0 else float("inf")
+                        cv = 100 * np.sqrt(var) / (total_num_biaise / total_denom_biaise) if total_denom_biaise != 0 else float("inf")
+
+                        biais = total_num_biaise/total_denom_biaise - total_num/total_denom
+                        biais_relatif = 100 * biais / (total_num/total_denom)
+
+                        list_var.append(var)
+                        list_cv.append(cv)
+                        list_biais_relatif.append(biais_relatif)
+
+                    var_moyenne = np.mean(var)
+                    cv_moyen = np.mean(list_cv)
+                    biais_relatif_moyen = np.mean(list_biais_relatif)
+
+                    results.append({
+                        "requête": key,
+                        "label": label,
+                        "variable numérateur": variable,
+                        "variable dénominateur": variable_denom,
+                        "groupement": query["groupement_style"],
+                        "cv moyen (%)": cv_moyen,
+                        "biais relatif moyen (%)": biais_relatif_moyen,
+                        "écart type moyen estimation ": np.sqrt(var_moyenne),
+                        "écart type total numérateur": scale_total_num,
+                        "écart type total dénominateur": scale_total_denom,
+                        "écart type total numérateur centré": scale_total_num_centre,
+                        "écart type total dénominateur centré": scale_total_denom_centre,
+                        "écart type comptage": scale_comptage,
+                        "écart type bruit total numérateur centré": np.sqrt(sigma2_total_num_centre),
+                        "écart type bruit total dénominateur centré": np.sqrt(sigma2_total_denom_centre),
+                        "écart type bruit comptage": np.sqrt(sigma2_comptage),
+                    })
+
+                    break
+
+        return pd.DataFrame(results).round(1)
+
+    @output
+    @render.data_frame
+    def table_ratio():
+        df = df_ratio().drop(columns="label")
+        # Définir l'arrondi spécifique
+        arrondi = {col: 1 if col in ["cv moyen (%)", "biais relatif moyen (%)", "écart type comptage", "écart type bruit comptage"] else 0 for col in df.columns}
+        df = df.round(arrondi)
+        return df
+
+    @render_widget
+    def plot_ratio():
+        return create_barplot(df_ratio(), x_col="requête", y_col="cv moyen (%)", hoover="label", color="groupement")
 
     @reactive.Calc
     def conception_query_quantile() -> dict[str, dict[str, Any]]:
@@ -601,10 +795,12 @@ def server(input, output, session):
     def update_variable_choices():
         ui.update_selectize("group_by", choices=variable_choices())
         if input.type_req() == "Comptage":
-            ui.update_selectize("variable", choices={})  # pas de choix possible
+            ui.update_selectize("variable", label="Variable:", choices={})  # pas de choix possible
+        elif input.type_req() == "Ratio":
+            ui.update_selectize("variable", label="Variable au numérateur:", choices=variable_choices())
+            ui.update_selectize("variable_denominateur", choices=variable_choices())
         else:
-            # Met à jour dynamiquement les choix de la selectize input
-            ui.update_selectize("variable", choices=variable_choices())
+            ui.update_selectize("variable", label="Variable:", choices=variable_choices())
 
     # Lecture du json contenant les requêtes
     @reactive.effect
@@ -639,7 +835,9 @@ def server(input, output, session):
         metadata_dict = yaml.safe_load(yaml_metadata_str()) if yaml_metadata_str() else {}
 
         variable = input.variable()
+        variable_denom = input.variable_denominateur()
         bounds = None
+        bounds_denom = None
         # Essayer de récupérer min/max dans YAML pour la variable choisie
         if 'columns' in metadata_dict and variable in metadata_dict['columns']:
             col_meta = metadata_dict['columns'][variable]
@@ -647,6 +845,13 @@ def server(input, output, session):
             max_val = col_meta.get('max')
             if min_val is not None and max_val is not None:
                 bounds = [float(min_val), float(max_val)]
+
+        if 'columns' in metadata_dict and variable_denom in metadata_dict['columns']:
+            col_meta = metadata_dict['columns'][variable_denom]
+            min_val = col_meta.get('min')
+            max_val = col_meta.get('max')
+            if min_val is not None and max_val is not None:
+                bounds_denom = [float(min_val), float(max_val)]
 
         base_dict = {
             "type": input.type_req(),
@@ -662,6 +867,12 @@ def server(input, output, session):
                 "nb_candidats": input.nb_candidats(),
             })
 
+        elif input.type_req() == 'Ratio':
+            base_dict.update({
+                "variable_denominateur": variable_denom,
+                "bounds_denominateur": bounds_denom
+            })
+
         clean_dict = {
             k: v for k, v in base_dict.items()
             if v not in [None, "", (), ["", ""], []]
@@ -674,9 +885,14 @@ def server(input, output, session):
             existing_req.get("by", []) == clean_dict.get("by", []) and
             existing_req.get("filtre") == clean_dict.get("filtre") and
             (
-                input.type_req() != "Quantile" or (
+                clean_dict.get("type") != "Quantile" or (
                     existing_req.get("alpha") == clean_dict.get("alpha") and
                     existing_req.get("nb_candidats") == clean_dict.get("nb_candidats")
+                )
+            ) and (
+                clean_dict.get("type") != "Ratio" or (
+                    existing_req.get("variable_denominateur") == clean_dict.get("variable_denominateur") and
+                    existing_req.get("bounds_denominateur") == clean_dict.get("bounds_denominateur")
                 )
             )
             for existing_req in current.values()
@@ -739,7 +955,6 @@ def server(input, output, session):
         if not data_requetes:
             return ui.p("Aucune requête chargée.")
         return affichage_requete(data_requetes, dataset())
-
 
     # Page 3 ----------------------------------
 
@@ -997,6 +1212,15 @@ def server(input, output, session):
     def radio_buttons_moyenne():
         return ui.layout_columns(
             *make_radio_buttons(requetes(), ["Moyenne"]),
+            col_widths=3
+        )
+
+    @output
+    @render.ui
+    @reactive.event(input.request_input, input.add_req, input.delete_btn, input.delete_all_btn)
+    def radio_buttons_ratio():
+        return ui.layout_columns(
+            *make_radio_buttons(requetes(), ["Ratio"]),
             col_widths=3
         )
 
