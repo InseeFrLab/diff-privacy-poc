@@ -21,9 +21,9 @@ from src.process_tools import (
 )
 from src.fonctions import (
     eps_from_rho_delta, optimization_boosted,
-    update_context,
+    update_context, parse_filter_string,
     get_weights, intervalle_confiance_quantile,
-    load_data,
+    load_data, manual_quantile_score, extract_column_names_from_choices,
     generate_yaml_metadata_from_lazyframe_as_string
 )
 from src.constant import (
@@ -82,7 +82,6 @@ def server(input, output, session):
     resultats_df = reactive.Value({})
     onglet_actuel = reactive.Value("Conception du budget")  # Onglet par défaut
     trigger_update_budget = reactive.Value(0)
-
 
     @reactive.Calc
     def get_poids_req() -> dict[str, float]:
@@ -791,17 +790,6 @@ def server(input, output, session):
                 nb_modalites[col] = nb
         return nb_modalites
 
-    @reactive.Effect
-    def update_variable_choices():
-        ui.update_selectize("group_by", choices=variable_choices())
-        if input.type_req() == "Comptage":
-            ui.update_selectize("variable", label="Variable:", choices={})  # pas de choix possible
-        elif input.type_req() == "Ratio":
-            ui.update_selectize("variable", label="Variable au numérateur:", choices=variable_choices())
-            ui.update_selectize("variable_denominateur", choices=variable_choices())
-        else:
-            ui.update_selectize("variable", label="Variable:", choices=variable_choices())
-
     # Lecture du json contenant les requêtes
     @reactive.effect
     @reactive.event(input.request_input)
@@ -830,14 +818,19 @@ def server(input, output, session):
     @reactive.event(input.add_req)
     def _():
         current = requetes().copy()
+        type_req = input.type_req()
 
         # Charger les métadonnées YAML dans un dict (tu peux le faire une fois dans un Calc sinon)
         metadata_dict = yaml.safe_load(yaml_metadata_str()) if yaml_metadata_str() else {}
-
-        variable = input.variable()
-        variable_denom = input.variable_denominateur()
+        variable = input.variable() if type_req != "Comptage" else None
+        # Vérifie si variable est vide ou None
+        if not variable and type_req != "Comptage":
+            ui.notification_show("❌ Aucune variable sélectionnée", type="error")
+            return
+        variable_denom = input.variable_denominateur() if type_req == "Ratio" else None
         bounds = None
         bounds_denom = None
+
         # Essayer de récupérer min/max dans YAML pour la variable choisie
         if 'columns' in metadata_dict and variable in metadata_dict['columns']:
             col_meta = metadata_dict['columns'][variable]
@@ -853,8 +846,18 @@ def server(input, output, session):
             if min_val is not None and max_val is not None:
                 bounds_denom = [float(min_val), float(max_val)]
 
+        # 🧪 Vérification syntaxique du filtre
+        filtre_str = input.filtre()
+        if filtre_str:
+            try:
+                all_columns = extract_column_names_from_choices(variable_choices())
+                _ = parse_filter_string(filtre_str, columns=all_columns)
+            except Exception:
+                ui.notification_show("❌ Erreur dans le format du filtre : vérifiez les opérateurs et les noms de variables", type="error")
+                return
+
         base_dict = {
-            "type": input.type_req(),
+            "type": type_req,
             "variable": variable,
             "bounds": bounds,
             "by": sorted(input.group_by()),  # tri pour éviter doublons
@@ -909,6 +912,7 @@ def server(input, output, session):
         requetes.set(current)
         ui.notification_show(f"✅ Requête `{new_id}` ajoutée", type="message")
         ui.update_selectize("delete_req", choices=list(requetes().keys()))
+        print(current)
 
     @reactive.effect
     @reactive.event(input.delete_btn)
@@ -1029,21 +1033,47 @@ def server(input, output, session):
     def fc_emp_plot():
         return create_fc_emp_plot(data_example, input.alpha_slider())
 
+    @reactive.Calc
+    def score_proba_quantile():
+        cmin, cmax = input.candidat_slider()
+        cstep = input.candidat_step()
+        alpha = input.alpha_slider()
+        epsilon = input.epsilon_slider()
+        df = data_example
+
+        candidats = np.linspace(cmin, cmax, cstep + 1).tolist()
+        scores, sensi = manual_quantile_score(df['body_mass_g'], candidats, alpha=alpha, et_si=True)
+
+        # Probabilités exponentielles (mécanisme exponentiel)
+        proba_non_norm = np.exp(-epsilon * scores / (2 * sensi))
+        proba = proba_non_norm / np.sum(proba_non_norm)
+
+        # Top 95% des probabilités
+        sorted_indices = np.argsort(proba)[::-1]
+        sorted_proba = proba[sorted_indices]
+        cumulative = np.cumsum(sorted_proba)
+        top95_mask = cumulative <= 0.95
+        if not np.all(top95_mask):
+            top95_mask[np.argmax(cumulative > 0.95)] = True
+        top95_indices = sorted_indices[top95_mask]
+
+        # Marquages
+        top95_cumul = [i in top95_indices for i in range(len(candidats))]
+
+        return {
+            "candidats": candidats,
+            "scores": scores,
+            "proba": proba,
+            "top95_cumul": top95_cumul
+        }
+
     @render_widget
     def score_plot():
-        candidat_min, candidat_max = input.candidat_slider()
-        return create_score_plot(
-            data_example, input.alpha_slider(), input.epsilon_slider(),
-            candidat_min, candidat_max, input.candidat_step()
-        )
+        return create_score_plot(data=score_proba_quantile())
 
     @render_widget
     def proba_plot():
-        candidat_min, candidat_max = input.candidat_slider()
-        return create_proba_plot(
-            data_example, input.alpha_slider(), input.epsilon_slider(),
-            candidat_min, candidat_max, input.candidat_step()
-        )
+        return create_proba_plot(data=score_proba_quantile())
 
     @reactive.calc
     def budgets_par_dataset():
@@ -1232,6 +1262,33 @@ def server(input, output, session):
             *make_radio_buttons(requetes(), ["Quantile"]),
             col_widths=3
         )
+
+    @render.ui
+    def ligne_conditionnelle():
+        type_req = input.type_req()
+        variables = variable_choices().copy()
+        ui.update_selectize("group_by", choices=variables)
+
+        if type_req == "Comptage":
+            return None
+
+        contenu = []
+        # Supprime le groupe "Qualitatives"
+        del variables["🔤 Qualitatives"]
+
+        label_variable = "Variable au numérateur:" if type_req == "Ratio" else "Variable:"
+        contenu.append(ui.column(3, ui.input_selectize("variable", label_variable,
+                                                    choices=variables, options={"plugins": ["clear_button"]})))
+
+        if type_req == "Ratio":
+            contenu.append(ui.column(3, ui.input_selectize("variable_denominateur", "Variable au dénominateur:",
+                                                        choices=variables, options={"plugins": ["clear_button"]})))
+
+        if type_req == "Quantile":
+            contenu.append(ui.column(3, ui.input_numeric("alpha", "Ordre du quantile:", 0.5, min=0, max=1, step=0.01)))
+            contenu.append(ui.column(3, ui.input_text("nb_candidats", "Nombre de candidats:")))
+
+        return ui.row(*contenu)
 
 
 app = App(app_ui, server, static_assets=www_dir)

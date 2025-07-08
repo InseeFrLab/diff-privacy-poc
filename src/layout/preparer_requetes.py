@@ -29,30 +29,24 @@ def bloc_ajout_requete():
     return ui.panel_well(
         ui.h4("➕ Ajouter une requête"),
         ui.br(),
+
+        # Ligne 1 : champs toujours visibles
         ui.row(
-            ui.column(3, ui.input_selectize("type_req", "Type de requête:", choices=["Comptage", "Total", "Moyenne", "Ratio", "Quantile"], selected="Comptage")),
+            ui.column(3, ui.input_selectize("type_req", "Type de requête:",
+                                            choices=["Comptage", "Total", "Moyenne", "Ratio", "Quantile"],
+                                            selected="Comptage")),
+            ui.column(3, ui.input_selectize("group_by", "Regrouper par:", choices={}, multiple=True)),
             ui.column(3, ui.input_text("filtre", "Condition de filtrage:"))
         ),
+
         ui.br(),
-        ui.row(
-            ui.column(3, ui.input_selectize("variable", "Variable:", choices={}, options={"plugins": ["clear_button"]})),
-            ui.column(3, ui.input_selectize("group_by", "Regrouper par:", choices={}, multiple=True))
-        ),
+
+        # Ligne 2 : affichage conditionnel dynamique
+        ui.output_ui("ligne_conditionnelle"),
+
         ui.br(),
-        ui.panel_conditional(
-            "input.type_req == 'Ratio'",
-            ui.row(
-                ui.column(3, ui.input_selectize("variable_denominateur", "Variable au dénominateur:", choices={}, options={"plugins": ["clear_button"]}))
-            ),
-        ),
-        ui.panel_conditional(
-            "input.type_req == 'Quantile'",
-            ui.row(
-                ui.column(3, ui.input_numeric("alpha", "Ordre du quantile:", 0.5, min=0, max=1, step=0.01)),
-                ui.column(3, ui.input_text("nb_candidats", "Nombre de candidats:"))
-            ),
-        ),
-        ui.br(),
+
+        # Ligne 3 : bouton à droite
         ui.row(
             ui.column(12,
                 ui.div(
@@ -62,6 +56,8 @@ def bloc_ajout_requete():
             )
         )
     )
+
+
 
 
 def layout_suppression_requetes():

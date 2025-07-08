@@ -13,6 +13,7 @@ from itertools import combinations, product
 import itertools
 from functools import reduce
 import cvxpy as cp
+from typing import Optional
 
 # Map des opérateurs Python vers leurs fonctions correspondantes
 OPS = {
@@ -321,6 +322,10 @@ def calcul_MCG(results_store, modalite, dict_query, type_req, pos=True):
         dict de DataFrames mis à jour.
     """
     liste_requests = [d["groupement"] for d in dict_query.values()]
+
+    if len(liste_requests) == 0:
+        return None
+
     X, R, X_df_infos = MCG(liste_requests, modalite)
     X_df_infos = ajouter_colonne_value(X_df_infos, dict_query, results_store)
 
@@ -484,9 +489,9 @@ def parse_single_condition(condition: str) -> pl.Expr:
     raise ValueError(f"Condition invalide : {condition}")
 
 
-def parse_filter_string(filter_str: str) -> pl.Expr:
-    """Transforme une chaîne de filtres combinés en une unique pl.Expr."""
-    # Séparation sécurisée via regex avec maintien des opérateurs binaires
+def parse_filter_string(filter_str: str, columns: Optional[list[str]] = None) -> pl.Expr:
+    """Transforme une chaîne de filtres combinés en une unique pl.Expr.
+    Si `columns` est fourni, vérifie que les colonnes mentionnées existent."""
     tokens = re.split(r'(\s+\&\s+|\s+\|\s+)', filter_str)
     exprs = []
     ops = []
@@ -498,9 +503,19 @@ def parse_filter_string(filter_str: str) -> pl.Expr:
         elif token == "|":
             ops.append("|")
         elif token:  # une condition
+            # Avant d'appeler parse_single_condition, on vérifie le nom de la colonne
+            for op_str in OPS:
+                if op_str in token:
+                    left, _ = token.split(op_str, 1)
+                    col = left.strip()
+                    if columns is not None and col not in columns:
+                        raise ValueError(f"Colonne inconnue dans le filtre : '{col}'")
+                    break
             exprs.append(parse_single_condition(token))
 
-    # Combine les expressions avec les bons opérateurs
+    if not exprs:
+        raise ValueError("Le filtre est vide ou mal formé")
+
     expr = exprs[0]
     for op, next_expr in zip(ops, exprs[1:]):
         if op == "&":
@@ -565,9 +580,17 @@ def get_weights(request: dict, input) -> dict:
     return weights
 
 
-
 def load_data(path: str, storage_options=None) -> pl.DataFrame:
     read_kwargs = {"storage_options": storage_options} if path.startswith("s3://") else {}
     df = pl.read_parquet(path, **read_kwargs)
 
     return df.drop("geometry") if "geometry" in df.columns else df
+
+
+def extract_column_names_from_choices(choices: dict) -> list[str]:
+    """À partir du dict retourné par `variable_choices`, extrait la liste plate des noms de colonnes."""
+    columns = []
+    for key, val in choices.items():
+        if isinstance(val, dict):  # sections comme "Qualitatives" ou "Quantitatives"
+            columns.extend(val.values())
+    return columns

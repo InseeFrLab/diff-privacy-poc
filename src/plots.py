@@ -1,5 +1,3 @@
-from src.fonctions import manual_quantile_score
-from scipy.stats import gumbel_r
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -156,64 +154,25 @@ def create_fc_emp_plot(df: pd.DataFrame, alpha: float):
     return fig
 
 
-def create_score_plot(df: pd.DataFrame, alpha: float, epsilon: float, cmin: float, cmax: float, cstep: int) -> go.Figure:
-    """
-    Affiche les scores bruités de candidats quantiles selon un mécanisme de Gumbel 
-    (basé sur la confidentialité différentielle), avec leurs intervalles de confiance 
-    à 99 %, en distinguant les candidats qui chevauchent ou non celui du score minimum.
+def create_score_plot(data: dict) -> go.Figure:
+    candidats = data["candidats"]
+    scores = data["scores"]
+    top95_cumul = data["top95_cumul"]
 
-    Paramètres
-    ----------
-    df : pd.DataFrame
-        Le tableau de données contenant une colonne 'body_mass_g'.
-    alpha : float
-        Le niveau de quantile cible (entre 0 et 1).
-    epsilon : float
-        Le paramètre de confidentialité différentielle (plus il est grand, moins il y a de bruit).
-    cmin : float
-        Valeur minimale parmi les candidats quantiles.
-    cmax : float
-        Valeur maximale parmi les candidats quantiles.
-    cstep : int
-        Nombre de pas (discrétisation) entre `cmin` et `cmax`.
-
-    Retourne
-    --------
-    fig : go.Figure
-        Une figure Plotly représentant les scores bruités des candidats avec
-        leurs intervalles de confiance, en distinguant les chevauchements.
-    """
-    candidats = np.linspace(cmin, cmax, cstep + 1).tolist()
-    scores, sensi = manual_quantile_score(df['body_mass_g'], candidats, alpha=alpha, et_si=True)
-    low_q, high_q = gumbel_r.ppf([0.005, 0.995], loc=0, scale=2 * sensi / epsilon)
-    lower = scores + low_q
-    upper = scores + high_q
-    min_idx = np.argmin(scores)
-    min_lower, min_upper = lower[min_idx], upper[min_idx]
-
-    rouges_x, rouges_y, rouges_err = [], [], []
-    bleus_x, bleus_y, bleus_err = [], [], []
-    for c, s, l, u in zip(candidats, scores, lower, upper):
-        if not (u < min_lower or l > min_upper):
-            rouges_x.append(c)
-            rouges_y.append(s)
-            rouges_err.append([s - l, u - s])
+    red_x, red_y, = [], []
+    blue_x, blue_y = [], []
+    for i, c in enumerate(candidats):
+        if top95_cumul[i]:
+            red_x.append(c)
+            red_y.append(scores[i])
         else:
-            bleus_x.append(c)
-            bleus_y.append(s)
-            bleus_err.append([s - l, u - s])
+            blue_x.append(c)
+            blue_y.append(scores[i])
 
-    trace_bleu = go.Scatter(x=bleus_x, y=bleus_y, mode='markers',
-        marker=dict(color='blue', size=10, opacity=0.7), name='Non chevauchement')
-    trace_rouge = go.Scatter(x=rouges_x, y=rouges_y, mode='markers',
-        marker=dict(color='red', size=10, opacity=0.7), name='Chevauchement')
-    trace_erreur = go.Scatter(x=candidats, y=scores, mode='markers',
-        marker=dict(color='black', size=2), error_y=dict(
-            type='data', symmetric=False,
-            array=[u - s for s, u in zip(scores, upper)],
-            arrayminus=[s - l for s, l in zip(scores, lower)],
-            color='black', thickness=1, width=4),
-        name='IC à 99% (Gumbel)')
+    trace_bleu = go.Scatter(x=blue_x, y=blue_y, mode='markers',
+        marker=dict(color='blue', size=10, opacity=0.7), name='Reste')
+    trace_rouge = go.Scatter(x=red_x, y=red_y, mode='markers',
+        marker=dict(color='red', size=10, opacity=0.7), name='Top 95% cumulés')
 
     layout = go.Layout(
         xaxis=dict(title="Candidat", showgrid=True, gridcolor='lightgray'),
@@ -222,52 +181,38 @@ def create_score_plot(df: pd.DataFrame, alpha: float, epsilon: float, cmin: floa
         legend=dict(x=0.5, y=1.2, xanchor='center', yanchor='top', orientation='h'),
         margin=dict(t=50, r=30, l=60, b=60),
     )
-    return go.Figure(data=[trace_erreur, trace_bleu, trace_rouge], layout=layout)
+    return go.Figure(data=[trace_rouge, trace_bleu], layout=layout)
 
 
-def create_proba_plot(df, alpha, epsilon, cmin, cmax, cstep):
+def create_proba_plot(data: dict) -> go.Figure:
+    candidats = data["candidats"]
+    proba = data["proba"]
+    top95_cumul = data["top95_cumul"]
 
-    candidats = np.linspace(cmin, cmax, cstep + 1).tolist()
-    scores, sensi = manual_quantile_score(df['body_mass_g'], candidats, alpha=alpha, et_si=True)
-    proba_non_norm = np.exp(-epsilon * scores / (2 * sensi))
-    proba = proba_non_norm / np.sum(proba_non_norm)
+    red_x, red_y = [], []
+    blue_x, blue_y = [], []
+    for i, c in enumerate(candidats):
+        if top95_cumul[i]:
+            red_x.append(c)
+            red_y.append(proba[i])
+        else:
+            blue_x.append(c)
+            blue_y.append(proba[i])
 
-    # Tri décroissant des probabilités
-    sorted_indices = np.argsort(proba)[::-1]
-    sorted_proba = np.array(proba)[sorted_indices]
-
-    # Sélection des indices jusqu'à ce que la somme atteigne 95%
-    cumulative = np.cumsum(sorted_proba)
-    top95_mask = cumulative <= 0.95
-    if not np.all(top95_mask):  # Inclure le premier élément qui fait dépasser 95%
-        top95_mask[np.argmax(cumulative > 0.95)] = True
-
-    red_indices = sorted_indices[top95_mask]
-    blue_indices = sorted_indices[~top95_mask]
-
-    trace_red = go.Scatter(
-        x=[candidats[i] for i in red_indices],
-        y=[proba[i] for i in red_indices],
-        mode='markers',
-        marker=dict(color='red', size=10),
-        name='Top 95% cumulés'
-    )
-    trace_blue = go.Scatter(
-        x=[candidats[i] for i in blue_indices],
-        y=[proba[i] for i in blue_indices],
-        mode='markers',
-        marker=dict(color='blue', size=10),
-        name='Autres'
-    )
+    trace_red = go.Scatter(x=red_x, y=red_y, mode='markers',
+        marker=dict(color='red', size=10, opacity=0.7), name='Top 95% cumulés')
+    trace_blue = go.Scatter(x=blue_x, y=blue_y, mode='markers',
+        marker=dict(color='blue', size=10, opacity=0.7), name='Reste')
 
     layout = go.Layout(
-        xaxis=dict(title="Candidat", showgrid=True),
-        yaxis=dict(title="Probabilité", showgrid=True),
+        xaxis=dict(title="Candidat", showgrid=True, gridcolor='lightgray'),
+        yaxis=dict(title="Probabilité", showgrid=True, gridcolor='lightgray'),
         plot_bgcolor='white', paper_bgcolor='white',
         legend=dict(x=0.5, y=1.2, xanchor='center', yanchor='top', orientation='h'),
         margin=dict(t=50, r=30, l=60, b=60),
     )
     return go.Figure(data=[trace_red, trace_blue], layout=layout)
+
 
 
 def plot_subset_tree(liste_request, taille_noeuds=2000, keep_gris=False):
