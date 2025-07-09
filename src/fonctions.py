@@ -235,6 +235,7 @@ def MCG(liste_requests, modalite):
 
     return X, R, X_df_infos
 
+
 # ------------------------------------------
 # Intégration des valeurs observées et variances dans le DataFrame info
 def ajouter_colonne_value(x_df_info, data_query, results_store):
@@ -419,17 +420,17 @@ def update_context(CONTEXT_PARAM, budget, requete):
     budget_rho = budget * somme_rho
     budget_eps = np.sqrt(8 * budget * somme_eps)
 
-    def create_context(budget_val, poids):
+    def create_context(budget_val, poids, is_rho):
         if budget_val == 0:
             return None
         return dp.Context.compositor(
             **CONTEXT_PARAM,
-            privacy_loss=dp.loss_of(rho=budget_val) if somme_rho else dp.loss_of(epsilon=budget_val),
+            privacy_loss=dp.loss_of(rho=budget_val) if is_rho else dp.loss_of(epsilon=budget_val),
             split_by_weights=poids
         )
 
-    context_rho = create_context(budget_rho, poids_rho)
-    context_eps = create_context(budget_eps, poids_eps)
+    context_rho = create_context(budget_rho, poids_rho, is_rho=True)
+    context_eps = create_context(budget_eps, poids_eps, is_rho=False)
 
     return context_rho, context_eps
 

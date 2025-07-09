@@ -118,13 +118,9 @@ def bloc_score_quantile():
                         ui.HTML("<strong>Paramètres :</strong>"),
                         ui.input_slider("epsilon_slider", "Budget epsilon :", min=0.01, max=5, value=0.5, step=0.01),
                         ui.input_slider("alpha_slider", "Ordre du quantile :", min=0, max=1, value=0.5, step=0.01),
-                        ui.p("Définir l’intervalle et le pas pour le candidat :"),
+                        ui.p("Définir le nombre de candidats susceptibles d'être tirés entre min et max de la variable :"),
                         # Ligne horizontale pour les 3 champs
-                        ui.div(
-                            ui.input_slider("candidat_slider", "Intervalles des candidats", min=0, max=10000, value=[2500, 6500]),
-                            ui.input_numeric("candidat_step", "Pas :", value=100),
-                            style="display: flex; flex-direction: row; gap: 15px; align-items: flex-end;"
-                        ),
+                        ui.input_slider("candidat_slider", "Nombre de candidats", min=1, max=1000, value=100),
                         style="padding: 10px; display: flex; flex-direction: column; gap: 20px;"
                     ),
                     # Colonne 2 : carte placeholder

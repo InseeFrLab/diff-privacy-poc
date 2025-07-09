@@ -13,7 +13,7 @@ async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dic
         progress.set(i, message=f"Requête {key} — {type_req}", detail="Calcul en cours...")
 
         # Traitement DP
-        dp_result: request_dp = process_request_dp(context_rho, context_eps, key_values, query)
+        dp_result = process_request_dp(context_rho, context_eps, key_values, query)
         # print(resultat_dp.precision())
         dp_result = dp_result.execute()
         df_result = dp_result.release().collect()
@@ -51,13 +51,13 @@ def process_request_dp(context_rho, context_eps, key_values, req):
         "Comptage": count_dp,
         "Moyenne": mean_dp,
         "Total": sum_centered_dp,
-        "Quantile": lambda: quantile_dp(context_eps, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre, alpha=alpha, nb_candidats=nb_candidats)
+        "Quantile": quantile_dp
     }
 
     if type_req not in mapping:
         raise ValueError(f"Type de requête non supporté : {type_req}")
 
-    return mapping[type_req](**req)
+    return mapping[type_req]() # class_mapping[type_req](**req)
 
 
 def process_request(df: pl.LazyFrame, req: dict, use_bounds=True) -> pl.LazyFrame:

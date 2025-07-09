@@ -313,7 +313,7 @@ class quantile_dp(request_dp):
         # Il faut qu'ils soient ordonnées de manière croissante ET de partie entière distincte
         bounds_min, bounds_max = self.bounds
 
-        self.candidats = np.linspace(bounds_min, bounds_max, int(nb_candidats) + 1)
+        self.candidats = np.linspace(bounds_min, bounds_max, int(nb_candidats))
         # self.candidats = np.arange(candidats["min"], candidats["max"] + candidats["step"], candidats["step"]).tolist()
 
         if isinstance(alpha, list):

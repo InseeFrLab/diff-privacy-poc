@@ -26,7 +26,7 @@ def page_conception_budget():
 def sidebar_budget():
     return ui.sidebar(
         ui.h3("Définition du budget"),
-        ui.input_numeric("budget_total", "Budget total :", 0.1, min=0, max=1, step=0.01),
+        ui.input_slider("budget_total", "Budget total (rho DP) :", min=0.01, max=1, value=0.1, step=0.01),
         ui.input_selectize("echelle_geo", "Echelle géographique de l'étude:", choices=regions_france, selected="France entière"),
         ui.input_selectize("dataset_name", "Nom du dataset:", choices=name_dataset, selected="Penguin", options={"create": True}),
         ui.input_action_button("valider_budget", "Valider le budget DP"),
@@ -49,10 +49,6 @@ def bloc_budget_comptage():
                 )),
                 ui.nav_panel("Table", ui.card(
                     ui.output_data_frame("table_comptage"),
-                    full_screen=True
-                )),
-                ui.nav_panel("Graphe", ui.card(
-                    ui.output_plot("graphe_plot"),
                     full_screen=True
                 ))
             ),
@@ -147,3 +143,17 @@ def bloc_budget_quantile():
             col_widths=[4, 8]
         )
     )
+
+
+def make_radio_buttons(request, filter_type: list[str]):
+    radio_buttons = []
+    priorite = {"Comptage": "2", "Total": "2", "Moyenne": "1", "Ratio": "1","Quantile": "3"}
+    for key, req in request.items():
+        if req["type"] in filter_type:
+            radio_buttons_id = key
+            radio_buttons.append(
+                ui.input_radio_buttons(radio_buttons_id, key,
+                    {"1": 1, "2": 2, "3": 3}, selected=priorite[req["type"]]
+                )
+            )
+    return radio_buttons

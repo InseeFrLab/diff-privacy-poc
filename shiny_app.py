@@ -2,19 +2,15 @@
 from src.plots import (
     create_histo_plot, create_fc_emp_plot,
     create_score_plot, create_proba_plot,
-    create_barplot,
-    plot_subset_tree
-)
-from src.layout.fonction_layout import (
-    make_radio_buttons,
-    affichage_requete,
-    afficher_resultats
+    create_barplot
 )
 from src.layout.introduction_dp import page_introduction_dp
 from src.layout.donnees import page_donnees
-from src.layout.preparer_requetes import page_preparer_requetes
-from src.layout.conception_budget import page_conception_budget
-from src.layout.resultat_dp import page_resultat_dp
+from src.layout.preparer_requetes import (
+    page_preparer_requetes, affichage_requete
+)
+from src.layout.conception_budget import page_conception_budget, make_radio_buttons
+from src.layout.resultat_dp import page_resultat_dp, afficher_resultats
 from src.layout.etat_budget_dataset import page_etat_budget_dataset
 from src.process_tools import (
     process_request, calculer_toutes_les_requetes
@@ -251,9 +247,39 @@ def server(input, output, session):
     @reactive.Calc
     def conception_query_count() -> dict[str, dict[str, Any]]:
         data_query = dict_query()
-        query_comptage = {k: v for k, v in data_query.items() if v["type"].lower() in ["count", "comptage"]}
-        query_comptage = optimization_boosted(dict_query=query_comptage, modalite=key_values())
-        return query_comptage
+
+        # Sélection des requêtes de type "comptage"
+        query_comptage = {
+            k: v for k, v in data_query.items()
+            if v["type"].lower() in ["count", "comptage"]
+        }
+
+        # Récupération des filtres distincts
+        filtres_uniques = set(v.get("filtre") for v in query_comptage.values())
+
+        # Dictionnaire final fusionné
+        requetes_finales: dict[str, dict[str, Any]] = {}
+
+        for filtre in filtres_uniques:
+            # Sous-ensemble des requêtes avec ce filtre
+            query_filtre = {
+                k: v for k, v in query_comptage.items()
+                if v.get("filtre") == filtre
+            }
+
+            # Optimisation spécifique à ce groupe
+            query_filtre_opt = optimization_boosted(dict_query=query_filtre, modalite=key_values())
+
+            # Ajout explicite du filtre dans chaque requête
+            query_filtre_opt = {
+                k: {**v, "filtre": filtre}
+                for k, v in query_filtre_opt.items()
+            }
+
+            # Fusion dans le dictionnaire final
+            requetes_finales.update(query_filtre_opt)
+
+        return requetes_finales
 
     @reactive.Calc
     def df_comptage() -> pd.DataFrame:
@@ -270,6 +296,7 @@ def server(input, output, session):
                     results.append({
                         "requête": req,
                         "groupement": query["groupement_style"],
+                        "filtre": query["filtre"],
                         "écart type estimation": query["scale"],
                         "écart type bruit": np.sqrt(query["sigma2"])
                     })
@@ -285,39 +312,45 @@ def server(input, output, session):
     def plot_comptage():
         return create_barplot(df_comptage(), x_col="requête", y_col="écart type estimation", hoover="groupement", color="groupement")
 
-    @render.plot
-    def graphe_plot():
-        req_comptage_croisement = conception_query_count()
-        liste_request = [request['groupement'] for request in req_comptage_croisement.values()]
-        return plot_subset_tree(liste_request, taille_noeuds=2000, keep_gris=False)
-
     @reactive.Calc
     def conception_query_sum() -> dict[str, dict[str, Any]]:
         data_query = dict_query()
 
         query_total = {k: v for k, v in data_query.items() if v["type"].lower() in ["total", "sum", "somme"]}
-        query_total_par_variable = {}
+
+        # Récupération des filtres distincts
+        filtres_uniques = set(v.get("filtre") for v in query_total.values())
 
         # Récupération des variables distinctes
         variables_uniques = set(v["variable"] for v in query_total.values())
 
-        # Boucle sur chaque variable unique
-        for variable in variables_uniques:
-            # Sous-ensemble des requêtes ayant cette variable
-            query_total_variable = {
-                k: v for k, v in query_total.items()
-                if v["variable"] == variable
-            }
+        # Dictionnaire final fusionné
+        requetes_finales: dict[str, dict[str, Any]] = {}
 
-            query_total_variable = optimization_boosted(dict_query=query_total_variable, modalite=key_values())
-            query_total_par_variable[variable] = query_total_variable
+        for filtre in filtres_uniques:
+            for variable in variables_uniques:
 
-        return query_total_par_variable
+                query_filtre_variable = {
+                    k: v for k, v in query_total.items()
+                    if v["variable"] == variable and v.get("filtre") == filtre
+                }
+                query_filtre_variable_opt = optimization_boosted(dict_query=query_filtre_variable, modalite=key_values())
+
+                # Ajout explicite du filtre dans chaque requête
+                query_filtre_variable_opt = {
+                    k: {**v, "filtre": filtre}
+                    for k, v in query_filtre_variable_opt.items()
+                }
+
+                # Fusion dans le dictionnaire final
+                requetes_finales.update(query_filtre_variable_opt)
+
+        return requetes_finales
 
     @reactive.Calc
     def df_total() -> pd.DataFrame:
         query_comptage = conception_query_count()
-        query_total_par_variable = conception_query_sum()
+        query_total = conception_query_sum()
         data_requetes = requetes()
         req_total = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["total", "sum", "somme"]}
 
@@ -334,9 +367,9 @@ def server(input, output, session):
 
             variable = req["variable"]
 
-            for query in query_total_par_variable[variable].values():
+            for query in query_total.values():
 
-                if key in query["req"]:
+                if key in query["req"] and query["variable"] == variable:
 
                     sigma2_total_centre = query["sigma2"]
                     scale_total_centre = query["scale"]
@@ -375,6 +408,7 @@ def server(input, output, session):
                         "label": label,
                         "variable": variable,
                         "groupement": query["groupement_style"],
+                        "filtre": query["filtre"],
                         "cv moyen (%)": cv_moyen,
                         "biais relatif moyen (%)": biais_relatif_moyen,
                         "écart type estimation": scale,
@@ -404,7 +438,7 @@ def server(input, output, session):
     @reactive.Calc
     def df_moyenne() -> dict[str, dict[str, Any]]:
         query_comptage = conception_query_count()
-        query_total_par_variable = conception_query_sum()
+        query_total = conception_query_sum()
         data_requetes = requetes()
         req_moyenne = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["moyenne", "mean"]}
 
@@ -421,9 +455,9 @@ def server(input, output, session):
 
             variable = req["variable"]
 
-            for query in query_total_par_variable[variable].values():
+            for query in query_total.values():
 
-                if key in query["req"]:
+                if key in query["req"] and query["variable"] == variable:
 
                     sigma2_total_centre = query["sigma2"]
                     scale_total_centre = query["scale"]
@@ -468,6 +502,7 @@ def server(input, output, session):
                         "label": label,
                         "variable": variable,
                         "groupement": query["groupement_style"],
+                        "filtre": query["filtre"],
                         "cv moyen (%)": cv_moyen,
                         "biais relatif moyen (%)": biais_relatif_moyen,
                         "écart type moyen estimation ": np.sqrt(var_moyenne),
@@ -498,7 +533,7 @@ def server(input, output, session):
     @reactive.Calc
     def df_ratio() -> dict[str, dict[str, Any]]:
         query_comptage = conception_query_count()
-        query_total_par_variable = conception_query_sum()
+        query_total = conception_query_sum()
         data_requetes = requetes()
         req_ratio = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["ratio"]}
 
@@ -515,9 +550,9 @@ def server(input, output, session):
 
             variable = req["variable"]
 
-            for query in query_total_par_variable[variable].values():
+            for query in query_total.values():
 
-                if key in query["req"]:
+                if key in query["req"] and query["variable"] == variable:
 
                     sigma2_total_num_centre = query["sigma2"]
                     scale_total_num_centre = query["scale"]
@@ -533,9 +568,9 @@ def server(input, output, session):
 
             variable_denom = req["variable_denominateur"]
 
-            for query in query_total_par_variable[variable_denom].values():
+            for query in query_total.values():
 
-                if key in query["req"]:
+                if key in query["req"] and query["variable"] == variable_denom:
 
                     sigma2_total_denom_centre = query["sigma2"]
                     scale_total_denom_centre = query["scale"]
@@ -582,6 +617,7 @@ def server(input, output, session):
                         "variable numérateur": variable,
                         "variable dénominateur": variable_denom,
                         "groupement": query["groupement_style"],
+                        "filtre": query["filtre"],
                         "cv moyen (%)": cv_moyen,
                         "biais relatif moyen (%)": biais_relatif_moyen,
                         "écart type moyen estimation ": np.sqrt(var_moyenne),
@@ -617,48 +653,46 @@ def server(input, output, session):
 
         data_query = dict_query()
         query_quantile = {k: v for k, v in data_query.items() if v["type"].lower() in ["quantile"]}
-        query_quantile_par_variable = {}
+
+        # Récupération des filtres distincts
+        filtres_uniques = set(v.get("filtre") for v in query_quantile.values())
 
         variables_uniques = set(v["variable"] for v in query_quantile.values())
 
-        # Boucle sur chaque variable unique
-        for variable in variables_uniques:
-            # Sous-ensemble des requêtes ayant cette variable
-            query_quantile_variable = {
-                k: v for k, v in query_quantile.items()
-                if v["variable"] == variable
-            }
+        for filtre in filtres_uniques:
+            for variable in variables_uniques:
+                query_filtre_variable = {
+                    k: v for k, v in query_quantile.items()
+                    if v["variable"] == variable and v.get("filtre") == filtre
+                }
 
-            for key_query, query in query_quantile_variable.items():
+                for key_query, query in query_filtre_variable.items():
 
-                budget_req_quantile = input.budget_total() * query["poids"]
-                epsilon = np.sqrt(8 * budget_req_quantile)
+                    budget_req_quantile = input.budget_total() * query["poids"]
+                    epsilon = np.sqrt(8 * budget_req_quantile)
 
-                ic = intervalle_confiance_quantile(dataset(), query, epsilon)
+                    ic = intervalle_confiance_quantile(dataset(), query, epsilon)
 
-                query_quantile_variable[key_query]["scale"] = ic
-
-            query_quantile_par_variable[variable] = query_quantile_variable
-
-        return query_quantile_par_variable
+                    query_quantile[key_query]["scale"] = ic
+        return query_quantile
 
     @reactive.Calc
     def df_quantile() -> pd.DataFrame:
-        query_quantile_par_variable = conception_query_quantile()
+        query_quantile = conception_query_quantile()
 
         results = []
-        for variable, query_quantile_variable in query_quantile_par_variable.items():
-            for query in query_quantile_variable.values():
+        for query in query_quantile.values():
+            variable = query["variable"]
+            label = f"{variable}<br>groupement: {query["groupement_style"]}"
 
-                label = f"{variable}<br>groupement: {query["groupement_style"]}"
-
-                results.append({
-                    "requête": query["req"][0],
-                    "label": label,
-                    "variable": variable,
-                    "groupement": query["groupement_style"],
-                    "taille moyenne IC 95%": query["scale"]
-                })
+            results.append({
+                "requête": query["req"][0],
+                "label": label,
+                "variable": variable,
+                "groupement": query["groupement_style"],
+                "filtre": query.get("filtre"),
+                "taille moyenne IC 95%": query["scale"]
+            })
         return pd.DataFrame(results).round(1)
 
     @output
@@ -758,11 +792,14 @@ def server(input, output, session):
     @reactive.Calc
     def key_values():
         df = dataset()
+        data_query = dict_query()
+        list_var = set(val for v in data_query.values() for val in v.get("by", []))
 
+        print(list_var)
         # Détecter les colonnes qualitatives (str ou catégorie)
         qualitatif_cols = [
             col for col, dtype in zip(df.columns, df.dtypes)
-            if dtype in [pl.Utf8, pl.Categorical, pl.Boolean]
+            if dtype in [pl.Utf8, pl.Categorical, pl.Boolean] and col in list_var
         ]
 
         # Extraire les modalités uniques, triées, sans NaN
@@ -820,14 +857,26 @@ def server(input, output, session):
         current = requetes().copy()
         type_req = input.type_req()
 
+        if type_req == "":
+            ui.notification_show("❌ Aucun type de requête n'est spécifié", type="error")
+            return
+
         # Charger les métadonnées YAML dans un dict (tu peux le faire une fois dans un Calc sinon)
         metadata_dict = yaml.safe_load(yaml_metadata_str()) if yaml_metadata_str() else {}
         variable = input.variable() if type_req != "Comptage" else None
+        variable_denom = input.variable_denominateur() if type_req == "Ratio" else None
+
+        nb_candidats = input.nb_candidats() if type_req == "Quantile" else None
+
         # Vérifie si variable est vide ou None
         if not variable and type_req != "Comptage":
             ui.notification_show("❌ Aucune variable sélectionnée", type="error")
             return
-        variable_denom = input.variable_denominateur() if type_req == "Ratio" else None
+
+        if not variable_denom and type_req == "Ratio":
+            ui.notification_show("❌ Aucune variable sélectionnée", type="error")
+            return
+
         bounds = None
         bounds_denom = None
 
@@ -864,13 +913,31 @@ def server(input, output, session):
             "filtre": input.filtre(),
         }
 
-        if input.type_req() == 'Quantile':
+        if type_req == 'Quantile':
+            if not nb_candidats:
+                ui.notification_show("❌ Nombre de valeurs candidates au quantile manquant", type="error")
+                return
+
+            if nb_candidats < 5:
+                ui.notification_show("❌ Nombre de valeurs candidates au quantile insuffisant", type="error")
+                return
+
+            alpha = float(input.alpha())
+
+            if alpha > 1 or alpha < 0:
+                ui.notification_show("❌ Ordre du quantile non compris entre 0 et 1", type="error")
+                return
+
             base_dict.update({
-                "alpha": float(input.alpha()),
-                "nb_candidats": input.nb_candidats(),
+                "alpha": alpha,
+                "nb_candidats": nb_candidats,
             })
 
-        elif input.type_req() == 'Ratio':
+        elif type_req == 'Ratio':
+            if not variable_denom:
+                ui.notification_show("❌ Aucune variable sélectionnée", type="error")
+                return
+
             base_dict.update({
                 "variable_denominateur": variable_denom,
                 "bounds_denominateur": bounds_denom
@@ -912,7 +979,7 @@ def server(input, output, session):
         requetes.set(current)
         ui.notification_show(f"✅ Requête `{new_id}` ajoutée", type="message")
         ui.update_selectize("delete_req", choices=list(requetes().keys()))
-        print(current)
+
 
     @reactive.effect
     @reactive.event(input.delete_btn)
@@ -1035,13 +1102,15 @@ def server(input, output, session):
 
     @reactive.Calc
     def score_proba_quantile():
-        cmin, cmax = input.candidat_slider()
-        cstep = input.candidat_step()
+        nb_candidat = input.candidat_slider()
         alpha = input.alpha_slider()
         epsilon = input.epsilon_slider()
         df = data_example
 
-        candidats = np.linspace(cmin, cmax, cstep + 1).tolist()
+        L = df["body_mass_g"].min()
+        U = df["body_mass_g"].max()
+
+        candidats = np.linspace(L, U, nb_candidat).tolist()
         scores, sensi = manual_quantile_score(df['body_mass_g'], candidats, alpha=alpha, et_si=True)
 
         # Probabilités exponentielles (mécanisme exponentiel)
@@ -1141,6 +1210,12 @@ def server(input, output, session):
 
         elif input.budget_total() == 0:
             ui.notification_show(f"❌ Vous devez valider un budget non nul avant d'accéder aux résultats.", type="error")
+
+        elif input.dataset_name() == "":
+            ui.notification_show(f"❌ Vous devez spécifier un nom au dataset.", type="error")
+
+        elif input.echelle_geo() == "":
+            ui.notification_show(f"❌ Vous devez spécifier l'échelle géographique de l'étude.", type="error")
 
         else:
             page_autorisee.set(True)
@@ -1269,7 +1344,7 @@ def server(input, output, session):
         variables = variable_choices().copy()
         ui.update_selectize("group_by", choices=variables)
 
-        if type_req == "Comptage":
+        if type_req == "Comptage" or type_req == "":
             return None
 
         contenu = []
@@ -1285,8 +1360,8 @@ def server(input, output, session):
                                                         choices=variables, options={"plugins": ["clear_button"]})))
 
         if type_req == "Quantile":
-            contenu.append(ui.column(3, ui.input_numeric("alpha", "Ordre du quantile:", 0.5, min=0, max=1, step=0.01)))
-            contenu.append(ui.column(3, ui.input_text("nb_candidats", "Nombre de candidats:")))
+            contenu.append(ui.column(3, ui.input_numeric("alpha", "Ordre du quantile:", 0.5, min=0, max=1, step=0.1)))
+            contenu.append(ui.column(3, ui.input_numeric("nb_candidats", "Nombre de candidats:", 1000, min=5, max=1_000_000, step=5)))
 
         return ui.row(*contenu)
 
