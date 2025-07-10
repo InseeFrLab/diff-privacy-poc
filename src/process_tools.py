@@ -9,20 +9,17 @@ async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dic
     current_results = {}
 
     for i, (key, query) in enumerate(dict_query.items(), start=1):
+
         type_req = query.get("type", "—")
         progress.set(i, message=f"Requête {key} — {type_req}", detail="Calcul en cours...")
 
-        # Traitement DP
         dp_result = process_request_dp(context_rho, context_eps, key_values, query)
-        # print(resultat_dp.precision())
         dp_result = dp_result.execute()
         df_result = dp_result.release().collect()
 
-        # Tri et réordonnancement si groupement
         by = query.get("by")
         if by and df_result.shape[1] > 1:
             df_result = df_result.sort(by=by)
-
             first_col = df_result.columns[0]
             other_cols = df_result.columns[1:]
             df_result = df_result.select(other_cols + [first_col])

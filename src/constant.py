@@ -59,4 +59,4 @@ radio_to_weight: Dict[int, float] = {
 contrib_individu: int = 1
 
 # Borne supérieure autorisée pour la taille d’un dataset (en nombre d’individu)
-borne_max_taille_dataset: int = 70_000_000 # 1  # Peut être relevé à 70_000_000 si besoin
+borne_max_taille_dataset: int = 1  # Peut être relevé à 70_000_000 si besoin

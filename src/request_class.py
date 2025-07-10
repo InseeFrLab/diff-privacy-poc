@@ -131,14 +131,8 @@ class sum_dp(request_dp):
         l, u = self.bounds
         query = self.context.query()
 
-        dtype = query.collect_schema().get(self.variable, None)
         query = self.context.query()
-        expr = pl.col(self.variable).fill_null(0)
-
-        if dtype in [pl.Float32, pl.Float64]:
-            expr = expr.fill_nan(0)  # Ajout seulement pour les floats
-
-        expr = expr.dp.sum((l, u)).alias("sum")
+        expr = pl.col(self.variable).fill_null(0).fill_nan(0).dp.sum((l, u)).alias("sum")
 
         if self.filtre is not None:
             query = query.filter(parse_filter_string(self.filtre))
@@ -163,15 +157,7 @@ class sum_centered_dp(request_dp):
         m = (l + u)/2
         sensi = (u - l)/2
         query = self.context.query()
-
-        dtype = query.collect_schema().get(self.variable, None)
-        query = self.context.query()
-        expr = (pl.col(self.variable) - m).fill_null(0)
-
-        if dtype in [pl.Float32, pl.Float64]:
-            expr = expr.fill_nan(0)  # Ajout seulement pour les floats
-
-        expr = expr.dp.sum((-sensi, sensi)).alias("sum")
+        expr = (pl.col(self.variable) - m).fill_null(0).fill_nan(0).dp.sum((-sensi, sensi)).alias("sum")
 
         if self.filtre is not None:
             query = query.filter(parse_filter_string(self.filtre))

@@ -1,0 +1,48 @@
+dataset_name: Population Métropole
+n_rows: 62971356
+n_columns: 11
+columns:
+  ID:
+    type: String
+    missing: 0
+    unique_values: 62971356
+  HOUSEHOLD_ID:
+    type: String
+    missing: 0
+    unique_values: 28099733
+  HOUSEHOLD_SIZE:
+    type: Int64
+    missing: 0
+    min: 1.0
+    max: 13.0
+  GRD_MENAGE:
+    type: Boolean
+    missing: 0
+  MONOPARENT:
+    type: Boolean
+    missing: 0
+  NIVEAU_VIE:
+    type: Float64
+    missing: 0
+    min: 0.0
+    max: 626638.08
+  TILE_ID:
+    type: String
+    missing: 0
+    unique_values: 2287884
+  AGE_CAT:
+    type: String
+    missing: 0
+    unique_values: 11
+  AGE:
+    type: Int64
+    missing: 0
+    min: 0.0
+    max: 105.0
+  ADULT:
+    type: Boolean
+    missing: 0
+  STATUT:
+    type: String
+    missing: 0
+    unique_values: 2

@@ -1,0 +1,48 @@
+dataset_name: Population Réunion
+n_rows: 867512
+n_columns: 11
+columns:
+  ID:
+    type: String
+    missing: 0
+    unique_values: 867512
+  HOUSEHOLD_ID:
+    type: String
+    missing: 0
+    unique_values: 323237
+  HOUSEHOLD_SIZE:
+    type: Int64
+    missing: 0
+    min: 1.0
+    max: 11.0
+  GRD_MENAGE:
+    type: Boolean
+    missing: 0
+  MONOPARENT:
+    type: Boolean
+    missing: 0
+  NIVEAU_VIE:
+    type: Float64
+    missing: 0
+    min: 0.03
+    max: 261643.51
+  TILE_ID:
+    type: String
+    missing: 0
+    unique_values: 14679
+  AGE_CAT:
+    type: String
+    missing: 0
+    unique_values: 11
+  AGE:
+    type: Int64
+    missing: 0
+    min: 0.0
+    max: 105.0
+  ADULT:
+    type: Boolean
+    missing: 0
+  STATUT:
+    type: String
+    missing: 0
+    unique_values: 2

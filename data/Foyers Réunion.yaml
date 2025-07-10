@@ -1,0 +1,93 @@
+dataset_name: Foyers Réunion
+n_rows: 323237
+n_columns: 19
+columns:
+  ID:
+    type: String
+    missing: 0
+    unique_values: 323237
+  TILE_ID:
+    type: String
+    missing: 0
+    unique_values: 14679
+  SIZE:
+    type: Int64
+    missing: 0
+    min: 1.0
+    max: 11.0
+  GRD_MENAGE:
+    type: Boolean
+    missing: 0
+  MONOPARENT:
+    type: Boolean
+    missing: 0
+  NB_ADULTS:
+    type: Int64
+    missing: 0
+    min: 1.0
+    max: 8.0
+  NB_MINORS:
+    type: Int64
+    missing: 0
+    min: 0.0
+    max: 4.0
+  ind_0_3:
+    type: Int64
+    missing: 0
+    min: 0.0
+    max: 4.0
+  ind_4_5:
+    type: Int64
+    missing: 0
+    min: 0.0
+    max: 4.0
+  ind_6_10:
+    type: Int64
+    missing: 0
+    min: 0.0
+    max: 4.0
+  ind_11_17:
+    type: Int64
+    missing: 0
+    min: 0.0
+    max: 4.0
+  ind_18_24:
+    type: Int64
+    missing: 0
+    min: 0.0
+    max: 4.0
+  ind_25_39:
+    type: Int64
+    missing: 0
+    min: 0.0
+    max: 5.0
+  ind_40_54:
+    type: Int64
+    missing: 0
+    min: 0.0
+    max: 5.0
+  ind_55_64:
+    type: Int64
+    missing: 0
+    min: 0.0
+    max: 4.0
+  ind_65_79:
+    type: Int64
+    missing: 0
+    min: 0.0
+    max: 4.0
+  ind_80p:
+    type: Int64
+    missing: 0
+    min: 0.0
+    max: 3.0
+  ind_inc:
+    type: Int64
+    missing: 0
+    min: 0.0
+    max: 4.0
+  NIVEAU_VIE:
+    type: Float64
+    missing: 0
+    min: 0.03
+    max: 261643.51

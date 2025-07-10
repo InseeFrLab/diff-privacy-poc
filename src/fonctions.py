@@ -9,6 +9,7 @@ from src.constant import (
 )
 import yaml
 import operator
+import os
 from itertools import combinations, product
 import itertools
 from functools import reduce
@@ -26,18 +27,89 @@ OPS = {
 }
 
 
-def intervalle_confiance_quantile(dataset, req, epsilon):
+def save_yaml_metadata_from_dataframe(lf: pl.DataFrame, dataset_name: str = "dataset") -> None:
+    # Résolution anticipée du schéma et des noms de colonnes
+    schema = lf.collect_schema()
+    colnames = list(schema.keys())
+
+    # Génération des expressions
+    exprs = []
+    for col in colnames:
+        exprs.extend([
+            pl.col(col).null_count().alias(f"{col}__nulls"),
+            pl.col(col).n_unique().alias(f"{col}__unique"),
+            pl.col(col).min().alias(f"{col}__min"),
+            pl.col(col).max().alias(f"{col}__max"),
+        ])
+
+    collected = lf.select(exprs).collect()
+    n_rows = lf.select(pl.len()).collect().item()
+
+    # Construction du dictionnaire de métadonnées
+    metadata = {
+        'dataset_name': dataset_name,
+        'n_rows': n_rows,
+        'n_columns': len(colnames),
+        'columns': {}
+    }
+
+    for col in colnames:
+        dtype = schema[col]
+        col_meta = {
+            'type': str(dtype),
+            'missing': int(collected[f"{col}__nulls"][0])
+        }
+
+        if dtype in {pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+                     pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+                     pl.Float32, pl.Float64}:
+            col_meta['min'] = (
+                round(float(collected[f"{col}__min"][0]), 2)
+                if collected[f"{col}__min"][0] is not None else None
+            )
+            col_meta['max'] = (
+                round(float(collected[f"{col}__max"][0]), 2)
+                if collected[f"{col}__max"][0] is not None else None
+            )
+        elif dtype in {pl.Utf8, pl.Categorical}:
+            col_meta['unique_values'] = int(collected[f"{col}__unique"][0])
+
+        metadata['columns'][col] = col_meta
+
+    # Sauvegarde du YAML dans le dossier "data"
+    os.makedirs("data", exist_ok=True)
+    yaml_path = os.path.join("data", f"{dataset_name}.yaml")
+    with open(yaml_path, "w", encoding="utf-8") as f:
+        yaml.dump(metadata, f, sort_keys=False, allow_unicode=True)
+
+
+def load_yaml_metadata(dataset_name: str = "dataset") -> dict:
+    yaml_path = os.path.join("data", f"{dataset_name}.yaml")
+    with open(yaml_path, "r", encoding="utf-8") as f:
+        metadata = yaml.safe_load(f)
+    return metadata
+
+
+def intervalle_confiance_quantile(
+    dataset: pl.LazyFrame, req: dict, epsilon: float, vrai_tableau: pl.DataFrame
+):
+
     variable = req.get("variable")
     bounds_min, bounds_max = req.get("bounds")
     alpha = req.get("alpha")
     nb_candidats = int(req.get("nb_candidats"))
     by = req.get("by")
 
+    # Récupération automatique de la colonne contenant le résultat du quantile
+    col_quantile = next((c for c in vrai_tableau.columns if c.startswith("quantile")), None)
+    if col_quantile is None:
+        raise ValueError("Aucune colonne commençant par 'quantile' trouvée dans le vrai_tableau")
+
     candidats = np.linspace(bounds_min, bounds_max, nb_candidats + 1)
     precisions = []
 
-    def process_data(data_variable):
-        if len(data_variable) == 0:
+    def process_data(data_variable: np.ndarray, vraie_value: float):
+        if data_variable.size == 0:
             return None
 
         scores, sensi = manual_quantile_score(
@@ -47,67 +119,105 @@ def intervalle_confiance_quantile(dataset, req, epsilon):
             et_si=True
         )
 
-        proba_non_norm = np.exp(-epsilon * scores / (2 * sensi))
+        scaled_scores = -epsilon * scores / (2 * sensi)
+        scaled_scores -= scaled_scores.max()  # stabilisation
+
+        proba_non_norm = np.exp(scaled_scores)
         proba = proba_non_norm / proba_non_norm.sum()
 
         sorted_indices = np.argsort(proba)[::-1]
-        sorted_proba = proba[sorted_indices]
         sorted_candidats = candidats[sorted_indices]
 
-        cumulative = np.cumsum(sorted_proba)
+        cumulative = np.cumsum(proba[sorted_indices])
         top95_mask = cumulative <= 0.95
         if not np.all(top95_mask):
             top95_mask[np.argmax(cumulative > 0.95)] = True
 
         candidats_top95 = sorted_candidats[top95_mask]
-        return np.max(candidats_top95) - np.min(candidats_top95)
+        ic_sup = np.max(candidats_top95)
+        ic_inf = np.min(candidats_top95)
+        return max(ic_sup - ic_inf, ic_sup - vraie_value, vraie_value - ic_inf)
 
     if by is None:
-        data_variable = dataset[variable].to_numpy()
-        return process_data(data_variable)
+        # Pas de group_by : une seule vraie valeur
+        vraie_value = vrai_tableau[col_quantile][0]
+        data_variable = dataset.select(variable).collect()[variable].to_numpy()
+        return process_data(data_variable, vraie_value)
 
-    # group_by present
-    grouped = dataset.group_by(by)
-    for _, group_df in grouped:
-        data_variable = group_df[variable].to_numpy()
-        precision_val = process_data(data_variable)
-        if precision_val is not None:
-            precisions.append(precision_val)
+    else:
+        # Avec group_by : collecter les colonnes nécessaires + variable
+        df = dataset.select([*by, variable]).collect()
+        grouped = df.group_by(by, maintain_order=True)
 
-    return np.mean(precisions) if precisions else None
+        for group_key, group_df in grouped:
+            # ⚠️ Création correcte d'une expression de filtre
+            filtre_expr = None
+            for col, val in zip(by, group_key):
+                condition = pl.col(col) == val
+                filtre_expr = condition if filtre_expr is None else (filtre_expr & condition)
+
+            ligne = vrai_tableau.filter(filtre_expr)
+
+            if ligne.is_empty():
+                continue
+
+            vraie_value = ligne[col_quantile][0]
+            data_variable = group_df[variable].to_numpy()
+            precision_val = process_data(data_variable, vraie_value)
+
+            if precision_val is not None:
+                precisions.append(precision_val)
+
+        return np.mean(precisions) if precisions else None
 
 
-def generate_yaml_metadata_from_lazyframe_as_string(df: pl.DataFrame, dataset_name: str = "dataset") -> str:
+def generate_yaml_metadata_from_dataframe(lf: pl.DataFrame, dataset_name: str = "dataset") -> str:
+
+    # Résolution anticipée du schéma et des noms de colonnes
+    schema = lf.collect_schema()
+    colnames = list(schema.keys())
+
+    # Génération des expressions
+    exprs = []
+    for col in colnames:
+        exprs.extend([
+            pl.col(col).null_count().alias(f"{col}__nulls"),
+            pl.col(col).n_unique().alias(f"{col}__unique"),
+            pl.col(col).min().alias(f"{col}__min"),
+            pl.col(col).max().alias(f"{col}__max"),
+        ])
+
+    collected = lf.select(exprs).collect()
+    n_rows = lf.select(pl.len()).collect().item()
+
     metadata = {
         'dataset_name': dataset_name,
-        'n_rows': df.height,
-        'n_columns': df.width,
+        'n_rows': n_rows,
+        'n_columns': len(colnames),
         'columns': {}
     }
 
-    for col in df.columns:
-        series = df[col]
-        dtype = series.dtype
-
+    for col in colnames:
+        dtype = schema[col]
         col_meta = {
             'type': str(dtype),
-            'missing': int(series.null_count())
+            'missing': int(collected[f"{col}__nulls"][0])
         }
 
         if dtype in {pl.Int8, pl.Int16, pl.Int32, pl.Int64,
                      pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
                      pl.Float32, pl.Float64}:
-            # Sécurisation min/max sur séries vides
-            if series.is_empty():
-                col_meta.update({'min': None, 'max': None})
-            else:
-                col_meta.update({
-                    'min': round(float(series.min()), 2),
-                    'max': round(float(series.max()), 2)
-                })
+            col_meta['min'] = (
+                round(float(collected[f"{col}__min"][0]), 2)
+                if collected[f"{col}__min"][0] is not None else None
+            )
+            col_meta['max'] = (
+                round(float(collected[f"{col}__max"][0]), 2)
+                if collected[f"{col}__max"][0] is not None else None
+            )
 
         elif dtype in {pl.Utf8, pl.Categorical}:
-            col_meta['unique_values'] = int(series.n_unique())
+            col_meta['unique_values'] = int(collected[f"{col}__unique"][0])
 
         metadata['columns'][col] = col_meta
 
@@ -330,6 +440,11 @@ def calcul_MCG(results_store, modalite, dict_query, type_req, pos=True):
     X, R, X_df_infos = MCG(liste_requests, modalite)
     X_df_infos = ajouter_colonne_value(X_df_infos, dict_query, results_store)
 
+    if len(liste_requests) == 1:
+        X_df_infos[type_req + "_MCG"] = X_df_infos["value"].values
+        results_modif = mettre_a_jour_results_store(X_df_infos, dict_query, results_store, col_source=type_req + "_MCG", col_cible=type_req)
+        return results_modif
+
     # Pondération par sigma2
     sigma = X_df_infos["sigma2"].values
     W = np.diag(1 / sigma)
@@ -435,7 +550,6 @@ def update_context(CONTEXT_PARAM, budget, requete):
     return context_rho, context_eps
 
 
-
 def rho_from_eps_delta(epsilon, delta):
     if not (0 < delta < 1):
         raise ValueError("delta must be in (0, 1)")
@@ -529,27 +643,32 @@ def parse_filter_string(filter_str: str, columns: Optional[list[str]] = None) ->
 
 def manual_quantile_score(data, candidats, alpha, et_si=False):
     def get_fractional_alpha(alpha_val):
-        # Cas connus optimisés
         known_alphas = {0: (0, 1), 0.25: (1, 4), 0.5: (1, 2), 0.75: (3, 4), 1: (1, 1)}
         return known_alphas.get(alpha_val, (int(np.floor(alpha_val * 10_000)), 10_000))
 
     alpha_num, alpha_denum = get_fractional_alpha(alpha)
-
-    # Si le mode "et_si" est activé, forcer la version décimale
     if et_si:
         alpha_num, alpha_denum = int(np.floor(alpha * 10_000)), 10_000
 
     data_len = len(data)
-    scores = []
+    if data_len == 0:
+        return np.array([]), max(alpha_num, alpha_denum - alpha_num)
 
+    sorted_data = np.sort(data)
+
+    scores = []
     for c in candidats:
-        n_less = np.count_nonzero(data < c)
-        n_equal = np.count_nonzero(data == c)
+        # nombre d'éléments < c : recherche d'indice d'insertion à gauche
+        n_less = np.searchsorted(sorted_data, c, side='left')
+        # nombre d'éléments == c : différence d'indices d'insertion droite et gauche
+        n_equal = np.searchsorted(sorted_data, c, side='right') - n_less
+
         score = alpha_denum * n_less - alpha_num * (data_len - n_equal)
         scores.append(abs(score))
 
     max_alpha = max(alpha_num, alpha_denum - alpha_num)
     return np.array(scores), max_alpha
+
 
 
 def get_weights(request: dict, input) -> dict:

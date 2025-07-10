@@ -20,11 +20,12 @@ from src.fonctions import (
     update_context, parse_filter_string,
     get_weights, intervalle_confiance_quantile,
     load_data, manual_quantile_score, extract_column_names_from_choices,
-    generate_yaml_metadata_from_lazyframe_as_string
+    load_yaml_metadata
 )
 from src.constant import (
     storage_options,
     contrib_individu,
+    chemin_dataset,
     borne_max_taille_dataset
 )
 
@@ -671,7 +672,9 @@ def server(input, output, session):
                     budget_req_quantile = input.budget_total() * query["poids"]
                     epsilon = np.sqrt(8 * budget_req_quantile)
 
-                    ic = intervalle_confiance_quantile(dataset(), query, epsilon)
+                    vrai_tableau = process_request(dataset().lazy(), query, use_bounds=False)
+
+                    ic = intervalle_confiance_quantile(dataset().lazy(), query, epsilon, vrai_tableau)
 
                     query_quantile[key_query]["scale"] = ic
         return query_quantile
@@ -709,19 +712,33 @@ def server(input, output, session):
     @render.ui
     @reactive.event(input.confirm_validation)
     async def req_dp_display():
-        # --- Barre de progression ---
+
         data_query = dict_query()
+        data_lazy = dataset().lazy()
+
+        # 🔍 Extraire toutes les colonnes mentionnées dans les requêtes
+        vars_by = {val for req in data_query.values() for val in req.get("by", [])}
+        vars_variable = {v for v in (req.get("variable") for req in data_query.values()) if v is not None}
+        selected_columns = set(vars_by | vars_variable)  # union des deux ensembles
+
+        # 🐍 Sous-échantillon propre du LazyFrame
+        if not selected_columns:
+            filtered_lazy = data_lazy.with_columns(pl.lit(1).alias("__dummy")).select("__dummy").collect().lazy()
+
+        else:
+            filtered_lazy = data_lazy.select(selected_columns).collect().lazy()
 
         with ui.Progress(min=0, max=len(data_query)) as p:
             p.set(0, message="Traitement en cours...", detail="Analyse requête par requête...")
 
             context_param = {
-                "data": dataset().lazy(),
-                "privacy_unit": dp.unit_of(contributions=contrib_individu),
-                "margins": [dp.polars.Margin(max_partition_length=borne_max_taille_dataset)],
-            }
+                    "data": filtered_lazy,
+                    "privacy_unit": dp.unit_of(contributions=contrib_individu),
+                    "margins": [dp.polars.Margin(max_partition_length=borne_max_taille_dataset)],
+                }
 
             context_rho, context_eps = update_context(context_param, input.budget_total(), data_query)
+
             await calculer_toutes_les_requetes(context_rho, context_eps, key_values(), data_query, p, resultats_df)
 
         return afficher_resultats(resultats_df, requetes(), data_query, key_values())
@@ -748,7 +765,9 @@ def server(input, output, session):
 
     @reactive.Calc
     def yaml_metadata_str():
-        return generate_yaml_metadata_from_lazyframe_as_string(dataset(), dataset_name="my_dataset")
+        chemin = chemin_dataset.get(input.default_dataset())
+        metadata = load_yaml_metadata(chemin)
+        return yaml.dump(metadata, sort_keys=False, allow_unicode=True)
 
     # Afficher le dataset
     @output
@@ -795,7 +814,6 @@ def server(input, output, session):
         data_query = dict_query()
         list_var = set(val for v in data_query.values() for val in v.get("by", []))
 
-        print(list_var)
         # Détecter les colonnes qualitatives (str ou catégorie)
         qualitatif_cols = [
             col for col, dtype in zip(df.columns, df.dtypes)
@@ -979,7 +997,6 @@ def server(input, output, session):
         requetes.set(current)
         ui.notification_show(f"✅ Requête `{new_id}` ajoutée", type="message")
         ui.update_selectize("delete_req", choices=list(requetes().keys()))
-
 
     @reactive.effect
     @reactive.event(input.delete_btn)
