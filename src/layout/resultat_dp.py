@@ -13,9 +13,6 @@ def page_resultat_dp():
         ui.panel_well(
             ui.h4("Résultat des requêtes DP"),
             ui.br(),
-            ui.div("Voici les résultats des requêtes différentes privées."),
-            ui.download_button("download_xlsx", "💾 Télécharger les résultats (XLSX)", class_="btn-outline-primary"),
-            ui.br(),
             ui.output_ui("req_dp_display")
         )
     )
@@ -213,4 +210,8 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
 
     results_store.set(final_results)
 
-    return ui.accordion(*panels, open=True)
+    return ui.TagList(
+        ui.div("📤 Exporter vos résultats respectant la confidentialité différentielle :", class_="mb-2"),
+        ui.download_button("download_xlsx", "💾 Télécharger les résultats (XLSX)", class_="btn-outline-primary mb-4"),
+        ui.accordion(*panels, open=True)
+    )

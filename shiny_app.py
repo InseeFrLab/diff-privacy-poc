@@ -26,6 +26,7 @@ from src.constant import (
     storage_options,
     contrib_individu,
     chemin_dataset,
+    choix_quantile,
     borne_max_taille_dataset
 )
 
@@ -302,7 +303,7 @@ def server(input, output, session):
                         "écart type bruit": np.sqrt(query["sigma2"])
                     })
 
-        return pd.DataFrame(results).round(1)
+        return pd.DataFrame(results).dropna(axis=1, how="all").round(1)
 
     @output
     @render.data_frame
@@ -421,7 +422,7 @@ def server(input, output, session):
                     })
 
                     break
-        return pd.DataFrame(results).round(1)
+        return pd.DataFrame(results).dropna(axis=1, how="all").round(1)
 
     @output
     @render.data_frame
@@ -516,7 +517,7 @@ def server(input, output, session):
 
                     break
 
-        return pd.DataFrame(results).round(1)
+        return pd.DataFrame(results).dropna(axis=1, how="all").round(1)
 
     @output
     @render.data_frame
@@ -634,7 +635,7 @@ def server(input, output, session):
 
                     break
 
-        return pd.DataFrame(results).round(1)
+        return pd.DataFrame(results).dropna(axis=1, how="all").round(1)
 
     @output
     @render.data_frame
@@ -686,27 +687,39 @@ def server(input, output, session):
         results = []
         for query in query_quantile.values():
             variable = query["variable"]
-            label = f"{variable}<br>groupement: {query["groupement_style"]}"
+            label = f"{variable}<br>groupement: {query['groupement_style']}"
 
-            results.append({
-                "requête": query["req"][0],
-                "label": label,
-                "variable": variable,
-                "groupement": query["groupement_style"],
-                "filtre": query.get("filtre"),
-                "taille moyenne IC 95%": query["scale"]
-            })
+            for quantile_key, taille_ic in query["scale"].items():
+                alpha = float(quantile_key.removeprefix("quantile_"))
+
+                results.append({
+                    "requête": query["req"][0],
+                    "label": label,
+                    "quantile": choix_quantile[alpha],
+                    "groupement": query["groupement_style"],
+                    "filtre": query.get("filtre"),
+                    "taille moyenne IC 95%": taille_ic,
+                })
+
         return pd.DataFrame(results).round(1)
 
     @output
     @render.data_frame
     def table_quantile():
-        df = df_quantile().drop(columns="label").round(0)
+        df = df_quantile().drop(columns="label").dropna(axis=1, how="all").round(0)
         return df
 
     @render_widget
     def plot_quantile():
-        return create_barplot(df_quantile(), x_col="requête", y_col="taille moyenne IC 95%", hoover="label", color="groupement")
+        df = df_quantile()
+
+        # Supposons qu'on veuille exclure "variable" ou une autre colonne du group_by
+        cols_to_group = ["requête", "label", "groupement", "filtre"]
+
+        # Moyenne des tailles d'IC par groupe
+        df_grouped = df.groupby(cols_to_group, dropna=False)["taille moyenne IC 95%"].mean().reset_index().dropna(axis=1, how="all")
+
+        return create_barplot(df_grouped, x_col="requête", y_col="taille moyenne IC 95%", hoover="label", color="groupement")
 
     @output
     @render.ui
@@ -932,6 +945,8 @@ def server(input, output, session):
         }
 
         if type_req == 'Quantile':
+            alpha = sorted(input.alpha())
+
             if not nb_candidats:
                 ui.notification_show("❌ Nombre de valeurs candidates au quantile manquant", type="error")
                 return
@@ -940,10 +955,8 @@ def server(input, output, session):
                 ui.notification_show("❌ Nombre de valeurs candidates au quantile insuffisant", type="error")
                 return
 
-            alpha = float(input.alpha())
-
-            if alpha > 1 or alpha < 0:
-                ui.notification_show("❌ Ordre du quantile non compris entre 0 et 1", type="error")
+            if not alpha:
+                ui.notification_show("❌ Pas de quantile sélectionné", type="error")
                 return
 
             base_dict.update({
@@ -1377,7 +1390,7 @@ def server(input, output, session):
                                                         choices=variables, options={"plugins": ["clear_button"]})))
 
         if type_req == "Quantile":
-            contenu.append(ui.column(3, ui.input_numeric("alpha", "Ordre du quantile:", 0.5, min=0, max=1, step=0.1)))
+            contenu.append(ui.column(3, ui.input_selectize("alpha", "Choix des quantiles:", choices=choix_quantile, multiple=True)))
             contenu.append(ui.column(3, ui.input_numeric("nb_candidats", "Nombre de candidats:", 1000, min=5, max=1_000_000, step=5)))
 
         return ui.row(*contenu)

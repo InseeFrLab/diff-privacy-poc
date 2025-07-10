@@ -15,14 +15,16 @@ async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dic
 
         dp_result = process_request_dp(context_rho, context_eps, key_values, query)
         dp_result = dp_result.execute()
+        print(dp_result.summarize())
         df_result = dp_result.release().collect()
 
         by = query.get("by")
         if by and df_result.shape[1] > 1:
-            df_result = df_result.sort(by=by)
-            first_col = df_result.columns[0]
-            other_cols = df_result.columns[1:]
-            df_result = df_result.select(other_cols + [first_col])
+            # Colonnes restantes (dans l'ordre d'origine, sauf celles de `by`)
+            remaining_cols = [col for col in df_result.columns if col not in by]
+   
+            # Réordonner les colonnes
+            df_result = df_result[by + remaining_cols]
 
         current_results[key] = df_result.to_pandas()
 
@@ -64,7 +66,7 @@ def process_request(df: pl.LazyFrame, req: dict, use_bounds=True) -> pl.LazyFram
     bounds = req.get("bounds")
     bounds_denom = req.get("bounds_denominateur")
     filtre = req.get("filtre")
-    alpha = req.get("alpha")
+    list_alpha = req.get("alpha")
     type_req = req.get("type", "").lower()
 
     if filtre:
@@ -102,7 +104,7 @@ def process_request(df: pl.LazyFrame, req: dict, use_bounds=True) -> pl.LazyFram
 
     elif type_req in {"quantile"}:
         agg_exprs = [
-            pl.col(variable).quantile(alpha, interpolation="nearest").alias(f"quantile_{alpha}")
+            pl.col(variable).quantile(float(alpha), interpolation="nearest").alias(f"quantile_{float(alpha)}") for alpha in list_alpha
         ]
 
     else:

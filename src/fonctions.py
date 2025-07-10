@@ -93,22 +93,16 @@ def load_yaml_metadata(dataset_name: str = "dataset") -> dict:
 def intervalle_confiance_quantile(
     dataset: pl.LazyFrame, req: dict, epsilon: float, vrai_tableau: pl.DataFrame
 ):
-
     variable = req.get("variable")
     bounds_min, bounds_max = req.get("bounds")
-    alpha = req.get("alpha")
+    alphas = [float(a) for a in req.get("alpha")]
     nb_candidats = int(req.get("nb_candidats"))
     by = req.get("by")
 
-    # Récupération automatique de la colonne contenant le résultat du quantile
-    col_quantile = next((c for c in vrai_tableau.columns if c.startswith("quantile")), None)
-    if col_quantile is None:
-        raise ValueError("Aucune colonne commençant par 'quantile' trouvée dans le vrai_tableau")
-
     candidats = np.linspace(bounds_min, bounds_max, nb_candidats + 1)
-    precisions = []
+    precisions_by_alpha = {alpha: [] for alpha in alphas}
 
-    def process_data(data_variable: np.ndarray, vraie_value: float):
+    def process_data(data_variable: np.ndarray, vraie_value: float, alpha: float):
         if data_variable.size == 0:
             return None
 
@@ -139,36 +133,47 @@ def intervalle_confiance_quantile(
         return max(ic_sup - ic_inf, ic_sup - vraie_value, vraie_value - ic_inf)
 
     if by is None:
-        # Pas de group_by : une seule vraie valeur
-        vraie_value = vrai_tableau[col_quantile][0]
+        # Cas sans group_by
         data_variable = dataset.select(variable).collect()[variable].to_numpy()
-        return process_data(data_variable, vraie_value)
-
+        for alpha in alphas:
+            col_quantile = f"quantile_{alpha}"
+            vraie_value = vrai_tableau[col_quantile][0]
+            precision_val = process_data(data_variable, vraie_value, alpha)
+            if precision_val is not None:
+                precisions_by_alpha[alpha].append(precision_val)
     else:
-        # Avec group_by : collecter les colonnes nécessaires + variable
+        # Cas avec group_by
         df = dataset.select([*by, variable]).collect()
         grouped = df.group_by(by, maintain_order=True)
 
         for group_key, group_df in grouped:
-            # ⚠️ Création correcte d'une expression de filtre
             filtre_expr = None
             for col, val in zip(by, group_key):
                 condition = pl.col(col) == val
                 filtre_expr = condition if filtre_expr is None else (filtre_expr & condition)
-
             ligne = vrai_tableau.filter(filtre_expr)
 
             if ligne.is_empty():
                 continue
 
-            vraie_value = ligne[col_quantile][0]
             data_variable = group_df[variable].to_numpy()
-            precision_val = process_data(data_variable, vraie_value)
 
-            if precision_val is not None:
-                precisions.append(precision_val)
+            for alpha in alphas:
+                col_quantile = f"quantile_{alpha}"
+                if col_quantile not in ligne.columns:
+                    continue
+                vraie_value = ligne[col_quantile][0]
+                precision_val = process_data(data_variable, vraie_value, alpha)
+                if precision_val is not None:
+                    precisions_by_alpha[alpha].append(precision_val)
 
-        return np.mean(precisions) if precisions else None
+    # Moyenne des précisions par quantile
+    return {
+        f"quantile_{alpha}": (
+            np.mean(precisions_by_alpha[alpha]) if precisions_by_alpha[alpha] else None
+        )
+        for alpha in alphas
+    }
 
 
 def generate_yaml_metadata_from_dataframe(lf: pl.DataFrame, dataset_name: str = "dataset") -> str:
@@ -668,7 +673,6 @@ def manual_quantile_score(data, candidats, alpha, et_si=False):
 
     max_alpha = max(alpha_num, alpha_denum - alpha_num)
     return np.array(scores), max_alpha
-
 
 
 def get_weights(request: dict, input) -> dict:

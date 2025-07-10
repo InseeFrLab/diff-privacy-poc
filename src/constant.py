@@ -9,6 +9,22 @@ storage_options: Dict[str, str] = {
     "endpoint_url": "https://minio.lab.sspcloud.fr",
 }
 
+choix_quantile = {
+    0: "Min",
+    0.1: "D1",
+    0.2: "D2",
+    0.25: "Q1",
+    0.3: "D3",
+    0.4: "D4",
+    0.5: "Q2",
+    0.6: "D6",
+    0.7: "D7",
+    0.75: "Q3",
+    0.8: "D8",
+    0.9: "D9",
+    1: "Max"
+}
+
 # Liste des régions françaises couvertes par les jeux de données
 regions_france: List[str] = [
     "France entière",

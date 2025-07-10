@@ -312,11 +312,10 @@ class quantile_dp(request_dp):
         aggs = [
             pl.col(self.variable)
             .fill_null(0)
-            .dp.quantile(a, self.candidats)
-            .alias(f"quantile_{a}")
+            .dp.quantile(float(a), self.candidats)
+            .alias(f"quantile_{float(a)}")
             for a in self.list_alpha
         ]
-
         if self.filtre is not None:
             query = query.filter(parse_filter_string(self.filtre))
 
