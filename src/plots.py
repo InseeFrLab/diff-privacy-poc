@@ -79,24 +79,16 @@ def create_barplot(df: pd.DataFrame, x_col: str, y_col: str, hoover: str = None,
 
 
 
+
+# Style global pour tout le script
+sns.set_theme(style="whitegrid")
+
+
 def create_histo_plot(df: pd.DataFrame, quantile_alpha: float):
     """
     Affiche un histogramme des valeurs de la variable 'body_mass_g', accompagné
     d'une ligne verticale représentant un quantile donné.
-
-    Paramètres
-    ----------
-    df : pd.DataFrame
-        Le tableau de données contenant une colonne 'body_mass_g'.
-    quantile_alpha : float
-        Le niveau de quantile à afficher (par exemple, 0.5 pour la médiane).
-
-    Retourne
-    --------
-    fig : matplotlib.figure.Figure
-        La figure contenant l'histogramme avec la ligne de quantile.
     """
-
     quantile_val = np.quantile(df['body_mass_g'].dropna(), quantile_alpha)
     fig, ax = plt.subplots()
     sns.histplot(df['body_mass_g'], stat="percent", bins=40, color='lightcoral', ax=ax)
@@ -111,88 +103,74 @@ def create_fc_emp_plot(df: pd.DataFrame, alpha: float):
     """
     Trace la fonction de répartition empirique (CDF) de la variable 'body_mass_g',
     avec une annotation visuelle du quantile à un niveau donné.
-
-    Paramètres
-    ----------
-    df : pd.DataFrame
-        Le tableau de données contenant une colonne 'body_mass_g'.
-    alpha : float
-        Le niveau du quantile à représenter sur la CDF (entre 0 et 1).
-
-    Retourne
-    --------
-    fig : matplotlib.figure.Figure
-        La figure contenant la fonction de répartition empirique avec une annotation du quantile.
     """
-    sorted_df = np.sort(df['body_mass_g'])
-    cdf = np.arange(1, len(df) + 1) / len(df)
-    quantile_val = np.quantile(df['body_mass_g'].dropna(), alpha)
+    sorted_vals = np.sort(df['body_mass_g'].dropna())
+    cdf = np.arange(1, len(sorted_vals) + 1) / len(sorted_vals)
+    quantile_val = np.quantile(sorted_vals, alpha)
+
     fig, ax = plt.subplots()
-    ax.plot(sorted_df, cdf, color="lightcoral")
+    ax.plot(sorted_vals, cdf, color="lightcoral", label="CDF empirique")
     ax.plot([quantile_val, quantile_val], [0, alpha], color='black', linestyle='--', linewidth=2)
-    ax.plot([min(df['body_mass_g']), quantile_val], [alpha, alpha], color='black', linestyle='--', linewidth=2)
-    ax.text(quantile_val, alpha + 0.1, rf"$q_{{{alpha:.2f}}} = {quantile_val:.0f}$", color='black', ha='right', fontsize=11)
+    ax.plot([sorted_vals[0], quantile_val], [alpha, alpha], color='black', linestyle='--', linewidth=2)
+    ax.text(quantile_val, alpha + 0.05, rf"$q_{{{alpha:.2f}}} = {quantile_val:.0f}$", 
+            color='black', ha='right', fontsize=11)
     ax.set_xlabel("Valeur")
     ax.set_ylabel("Probabilité cumulative")
     ax.grid(True)
     return fig
 
-
-def create_score_plot(data: dict) -> go.Figure:
+def create_score_plot(data: dict) -> plt.Figure:
+    """
+    Affiche un nuage de points des scores des candidats, 
+    en distinguant les top 95% cumulés (rouge) des autres (bleu).
+    """
     candidats = data["candidats"]
     scores = data["scores"]
     top95_cumul = data["top95_cumul"]
 
-    red_x, red_y, = [], []
-    blue_x, blue_y = [], []
-    for i, c in enumerate(candidats):
-        if top95_cumul[i]:
-            red_x.append(c)
-            red_y.append(scores[i])
-        else:
-            blue_x.append(c)
-            blue_y.append(scores[i])
+    # Construction du DataFrame
+    df = pd.DataFrame({
+        "Candidat": candidats,
+        "Score": scores,
+        "Top95": top95_cumul
+    })
 
-    trace_bleu = go.Scatter(x=blue_x, y=blue_y, mode='markers',
-        marker=dict(color='blue', size=10, opacity=0.7), name='Reste')
-    trace_rouge = go.Scatter(x=red_x, y=red_y, mode='markers',
-        marker=dict(color='red', size=10, opacity=0.7), name='Top 95% cumulés')
-
-    layout = go.Layout(
-        xaxis=dict(title="Candidat", showgrid=True, gridcolor='lightgray'),
-        yaxis=dict(title="Score", showgrid=True, gridcolor='lightgray'),
-        plot_bgcolor='white', paper_bgcolor='white',
-        legend=dict(x=0.5, y=1.2, xanchor='center', yanchor='top', orientation='h'),
-        margin=dict(t=50, r=30, l=60, b=60),
+    fig, ax = plt.subplots(figsize=(8, 5))
+    sns.scatterplot(
+        data=df, x="Candidat", y="Score", hue="Top95", palette={True: "red", False: "blue"},
+        ax=ax, s=100, alpha=0.7, legend="full"
     )
-    return go.Figure(data=[trace_rouge, trace_bleu], layout=layout)
+
+    ax.set_xlabel("Candidat")
+    ax.set_ylabel("Score")
+    ax.legend(title="Top 95% cumulés")
+    ax.grid(True)
+    return fig
 
 
-def create_proba_plot(data: dict) -> go.Figure:
+def create_proba_plot(data: dict) -> plt.Figure:
+    """
+    Affiche un nuage de points des probabilités des candidats,
+    en distinguant les top 95% cumulés (rouge) des autres (bleu).
+    """
     candidats = data["candidats"]
     proba = data["proba"]
     top95_cumul = data["top95_cumul"]
 
-    red_x, red_y = [], []
-    blue_x, blue_y = [], []
-    for i, c in enumerate(candidats):
-        if top95_cumul[i]:
-            red_x.append(c)
-            red_y.append(proba[i])
-        else:
-            blue_x.append(c)
-            blue_y.append(proba[i])
+    df = pd.DataFrame({
+        "Candidat": candidats,
+        "Proba": proba,
+        "Top95": top95_cumul
+    })
 
-    trace_red = go.Scatter(x=red_x, y=red_y, mode='markers',
-        marker=dict(color='red', size=10, opacity=0.7), name='Top 95% cumulés')
-    trace_blue = go.Scatter(x=blue_x, y=blue_y, mode='markers',
-        marker=dict(color='blue', size=10, opacity=0.7), name='Reste')
-
-    layout = go.Layout(
-        xaxis=dict(title="Candidat", showgrid=True, gridcolor='lightgray'),
-        yaxis=dict(title="Probabilité", showgrid=True, gridcolor='lightgray'),
-        plot_bgcolor='white', paper_bgcolor='white',
-        legend=dict(x=0.5, y=1.2, xanchor='center', yanchor='top', orientation='h'),
-        margin=dict(t=50, r=30, l=60, b=60),
+    fig, ax = plt.subplots(figsize=(8, 5))
+    sns.scatterplot(
+        data=df, x="Candidat", y="Proba", hue="Top95", palette={True: "red", False: "blue"},
+        ax=ax, s=100, alpha=0.7, legend="full"
     )
-    return go.Figure(data=[trace_red, trace_blue], layout=layout)
+
+    ax.set_xlabel("Candidat")
+    ax.set_ylabel("Probabilité")
+    ax.legend(title="Top 95% cumulés")
+    ax.grid(True)
+    return fig

@@ -1,5 +1,4 @@
 from shiny import ui
-from shinywidgets import output_widget
 
 
 def page_introduction_dp():
@@ -15,38 +14,35 @@ def bloc_bruit_gaussien():
     return ui.panel_well(
         ui.h4("Mécanisme DP : ajout d'un bruit Gaussien centré (Comptage et Total)"),
         ui.br(),
+
+        # Conteneur principal : structure en colonne horizontale avec espacements
         ui.div(
-            # Partie gauche : slider + résumé
+            # === Partie de gauche : sliders et résumé ===
             ui.div(
-                ui.div(
-                    ui.input_slider("scale_gauss", "Écart type du bruit :", min=1, max=100, value=10),
-                    style="width: 400px;"
+                ui.input_slider(
+                    "scale_gauss", "Écart type du bruit :",
+                    min=1, max=100, value=10,
+                    width="300px"
                 ),
-                ui.div(
-                    ui.output_ui("interval_summary"),
-                ),
+                ui.output_ui("interval_summary"),
                 style="display: flex; flex-direction: column; gap: 20px;"
             ),
 
-            # Partie gauche : deux tableaux côte à côte
-            ui.div(
-                ui.layout_column_wrap(
-                    ui.card(
-                        ui.card_header("Tableau de comptage non bruité"),
-                        ui.output_data_frame("cross_table"),
-                    ),
-                    ui.card(
-                        ui.card_header("Exemple après bruitage (sans post-traitement)"),
-                        ui.output_data_frame("cross_table_dp"),
-                    ),
-                    width=1 / 2,
+            # === Partie centrale : deux tableaux côte à côte ===
+            ui.layout_column_wrap(
+                ui.card(
+                    ui.card_header("Tableau de comptage non bruité"),
+                    ui.output_data_frame("cross_table"),
                 ),
-                style="flex: 1;"
+                ui.card(
+                    ui.card_header("Après bruitage"),
+                    ui.output_data_frame("cross_table_dp"),
+                ),
+                width=1 / 2,
             ),
 
-            # Partie budget DP : propre et sobre
+            # === Partie droite : budget DP ===
             ui.div(
-                ui.output_ui("dp_budget_summary"),
                 ui.input_slider(
                     "delta_slider",
                     "Exposant de δ",
@@ -54,11 +50,14 @@ def bloc_bruit_gaussien():
                     max=-1,
                     value=-3,
                     step=1,
-                    width="320px"
+                    width="300px"
                 ),
-                style="margin-top: 30px; display: flex; flex-direction: column; gap: 16px;"
+                ui.output_ui("dp_budget_summary"),
+                style="display: flex; flex-direction: column; gap: 16px;"
             ),
-            style="display: flex; align-items: flex-start; gap: 50px;"
+
+            # === Style global du container ===
+            style="display: flex; flex-direction: row; align-items: flex-start; gap: 50px;"
         ),
     )
 
@@ -126,13 +125,13 @@ def bloc_score_quantile():
                     # Colonne 2 : carte placeholder
                     ui.card(
                         ui.card_header("Score des candidats"),
-                        output_widget("score_plot"),
+                        ui.output_plot("score_plot"),
                         full_screen=True,
                     ),
                     # Colonne 3 : carte placeholder
                     ui.card(
                         ui.card_header("Probabilité de sélection"),
-                        output_widget("proba_plot"),
+                        ui.output_plot("proba_plot"),
                         full_screen=True,
                     ),
                     col_widths=[3, 5, 4]

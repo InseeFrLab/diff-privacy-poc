@@ -180,6 +180,9 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
         for col in df_result.select_dtypes(include=["float"]).columns:
             df_result[col] = df_result[col].apply(lambda x: 0.0 if x == -0.0 else x)
 
+        if "count" in df_result.columns:
+            df_result["count"] = df_result["count"].clip(lower=0)
+
         final_results[key] = df_result
 
         param_card = ui.card(

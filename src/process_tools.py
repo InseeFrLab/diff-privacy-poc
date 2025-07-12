@@ -22,9 +22,10 @@ async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dic
         if by and df_result.shape[1] > 1:
             # Colonnes restantes (dans l'ordre d'origine, sauf celles de `by`)
             remaining_cols = [col for col in df_result.columns if col not in by]
-   
+
             # Réordonner les colonnes
             df_result = df_result[by + remaining_cols]
+            df_result = df_result.sort(by=by)
 
         current_results[key] = df_result.to_pandas()
 

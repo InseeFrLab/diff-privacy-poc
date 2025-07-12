@@ -7,24 +7,11 @@ from src.process_tools import (
 def page_preparer_requetes():
     return ui.nav_panel(
         "Préparer ses requêtes",
-        ui.page_sidebar(
-            sidebar_requetes(),
-            bloc_ajout_requete(),
-            ui.hr(),
-            layout_suppression_requetes(),
-            ui.hr(),
-            bloc_requetes_actuelles()
-        )
-    )
-
-
-def sidebar_requetes():
-    return ui.sidebar(
-        ui.input_file("request_input", "📂 Importer un fichier JSON", accept=[".json"]),
-        ui.br(),
-        ui.download_button("download_json", "💾 Télécharger les requêtes (JSON)", class_="btn-outline-primary"),
-        position="right",
-        bg="#f8f8f8"
+        bloc_ajout_requete(),
+        ui.hr(),
+        layout_suppression_requetes(),
+        ui.hr(),
+        bloc_requetes_actuelles()
     )
 
 
@@ -65,6 +52,29 @@ def bloc_ajout_requete():
 def layout_suppression_requetes():
     return ui.layout_columns(
         ui.panel_well(
+            ui.h4("Import / Export"),
+            ui.br(),
+            ui.row(
+                ui.column(6, ui.input_file("request_input", "📂 Importer un fichier JSON", accept=[".json"]))
+            ),
+            ui.row(
+                ui.column(12,
+                    ui.div(
+                        ui.download_button("download_json", "💾 Télécharger les requêtes (JSON)", class_="btn-outline-primary"),
+                        class_="d-flex justify-content-end"
+                    )
+                )
+            )
+        ),
+        ui.panel_well(
+            ui.h4("Affichage des requetes"),
+            ui.br(),
+            ui.row(
+                ui.column(6, ui.input_selectize("affichage_req", "Requêtes à afficher:", 
+                    choices=["TOUTES", "Comptage", "Total", "Moyenne", "Ratio", "Quantile"], selected="TOUTES", options={"allowEmptyOption": False}))
+            )
+        ),
+        ui.panel_well(
             ui.h4("🗑️ Supprimer une requête"),
             ui.br(),
             ui.row(
@@ -73,20 +83,7 @@ def layout_suppression_requetes():
             ui.row(
                 ui.column(12,
                     ui.div(
-                        ui.input_action_button("delete_btn", "Supprimer"),
-                        class_="d-flex justify-content-end"
-                    )
-                )
-            )
-        ),
-        ui.panel_well(
-            ui.h4("🗑️ Supprimer toutes les requêtes"),
-            ui.br(),
-            ui.row(ui.column(12, ui.div(style="height: 85px"))),
-            ui.row(
-                ui.column(12,
-                    ui.div(
-                        ui.input_action_button("delete_all_btn", "Supprimer TOUT", class_="btn btn-danger"),
+                        ui.input_action_button("delete_btn", "Supprimer", class_="btn btn-danger"),
                         class_="d-flex justify-content-end"
                     )
                 )
@@ -122,17 +119,12 @@ def make_card_body(req):
     return ui.card_body(*parts)
 
 
-def affichage_requete(requetes, dataset):
+def affichage_requete(requetes, dict_stockage):
 
     panels = []
-    df = dataset.lazy()
 
     for key, req in requetes.items():
         # Colonne de gauche : paramètres
-        resultat = process_request(df, req, use_bounds=False)
-
-        if req.get("by") is not None:
-            resultat = resultat.sort(by=req.get("by"))
 
         param_card = ui.card(
             ui.card_header("Paramètres"),
@@ -141,51 +133,8 @@ def affichage_requete(requetes, dataset):
 
         # Colonne de droite : table / placeholder
         result_card = ui.card(
-            ui.card_header("Résultats sans application de la DP (à titre indicatif)"),
-            ui.tags.style("""
-                .table {
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    font-size: 0.9rem;
-                    box-shadow: 0 0 10px rgba(0,0,0,0.05);
-                    border-radius: 0.25rem;
-                    border-collapse: collapse;
-                    width: 100%;
-                    border: 1px solid #dee2e6;
-                }
-                .table-hover tbody tr:hover {
-                    background-color: #f1f1f1;
-                }
-                .table-striped tbody tr:nth-of-type(odd) {
-                    background-color: #fafafa;
-                }
-                table.table thead th {
-                    background-color: #f8f9fa !important;
-                    font-weight: 700 !important;
-                    border-left: 1px solid #dee2e6;
-                    border-right: 1px solid #dee2e6;
-                    border-bottom: 2px solid #dee2e6;
-                    padding: 0.3rem 0.6rem;
-                    vertical-align: middle !important;
-                    text-align: center;
-                    position: sticky;
-                    top: 0;
-                    z-index: 10;
-                }
-                tbody td {
-                    padding: 0.3rem 0.6rem;
-                    vertical-align: middle !important;
-                    text-align: center;
-                    border-left: 1px solid #dee2e6;
-                    border-right: 1px solid #dee2e6;
-                }
-                thead th:first-child, tbody td:first-child {
-                    border-left: none;
-                }
-                thead th:last-child, tbody td:last-child {
-                    border-right: none;
-                }
-            """),
-            ui.HTML(resultat.to_pandas().to_html(
+            ui.card_header("Résultats sans application de la DP"),
+            ui.HTML(dict_stockage[key].to_html(
                 classes="table table-striped table-hover table-sm text-center align-middle",
                 border=0,
                 index=False
@@ -207,3 +156,21 @@ def affichage_requete(requetes, dataset):
         )
 
     return ui.accordion(*panels, open=True)
+
+
+def calcul_requete(requetes, dataset):
+    df = dataset.lazy()
+    dict_results = {}
+
+    for key, req in requetes.items():
+        # Colonne de gauche : paramètres
+        resultat = process_request(df, req, use_bounds=False)
+
+        if req.get("by") is not None:
+            resultat = resultat.sort(by=req.get("by"))
+
+        resultat = resultat.to_pandas()
+
+        dict_results[key] = resultat
+
+    return dict_results
