@@ -3,68 +3,58 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.graph_objects as go
 import pandas as pd
+sns.set_theme(style="whitegrid")
 
 
 def create_barplot(df: pd.DataFrame, x_col: str, y_col: str, hoover: str = None, color: str = None) -> go.Figure:
     fig = go.Figure()
 
-    if not df.empty:
-        displayed_texts = []
-        hover_texts = []
-        colors = []
+    displayed_texts = []
+    hover_texts = []
+    colors = []
 
-        for i, row in df.iterrows():
-            # Texte affiché sur la barre : court
-            if hoover and hoover in df.columns:
-                val = row[y_col]
-                val_text = f"{val:.1f}" if isinstance(val, (int, float)) else str(val)
-                text_displayed = f"{row[hoover]}<br>{y_col}: {val_text}"
-            else:
-                text_displayed = f"{y_col}: {row[y_col]:.2f}" if isinstance(row[y_col], (int, float)) else f"{y_col}: {row[y_col]}"
+    for i, row in df.iterrows():
+        # Texte affiché sur la barre : court
+        if hoover and hoover in df.columns:
+            val = row[y_col]
+            val_text = f"{val:.1f}" if isinstance(val, (int, float)) else str(val)
+            text_displayed = f"{row[hoover]}<br>{y_col}: {val_text}"
+        else:
+            text_displayed = f"{y_col}: {row[y_col]:.2f}" if isinstance(row[y_col], (int, float)) else f"{y_col}: {row[y_col]}"
 
-            displayed_texts.append(f"{text_displayed}")
-            # Texte survolé (hover) : toutes les colonnes
-            hover_info = "<br>".join(f"{col}: {row[col]}" for col in df.columns)
-            hover_texts.append(f"{hover_info}")
+        displayed_texts.append(f"{text_displayed}")
+        # Texte survolé (hover) : toutes les colonnes
+        hover_info = "<br>".join(f"{col}: {row[col]}" for col in df.columns)
+        hover_texts.append(f"{hover_info}")
 
-            # Couleur personnalisée
-            colval = row[color] if color and color in df.columns else None
-            if colval == "Aucun":
-                colors.append("darkgreen")
-            elif isinstance(colval, str):
-                colors.append("steelblue")
-            elif isinstance(colval, tuple) and len(colval) == 2:
-                colors.append("darkorange")
-            elif isinstance(colval, tuple) and len(colval) == 3:
-                colors.append("firebrick")
-            else:
-                colors.append("gray")
+        # Couleur personnalisée
+        colval = row[color] if color and color in df.columns else None
+        if colval == "Aucun":
+            colors.append("darkgreen")
+        elif isinstance(colval, str):
+            colors.append("steelblue")
+        elif isinstance(colval, tuple) and len(colval) == 2:
+            colors.append("darkorange")
+        elif isinstance(colval, tuple) and len(colval) == 3:
+            colors.append("firebrick")
+        else:
+            colors.append("gray")
 
-        fig.add_trace(go.Bar(
-            x=df[y_col],
-            y=df[x_col],
-            orientation="h",
-            marker=dict(
-                color=colors,
-                line=dict(width=1, color="black"),
-                opacity=0.85,
-            ),
-            text=displayed_texts,  # Texte affiché sur les barres (le même pour toutes si non liste)
-            hovertext=hover_texts,  # Toutes les infos en hover
-            hovertemplate="%{hovertext}<extra></extra>",
-            textposition="auto",
-            textfont=dict(color="white", size=18),
-        ))
-    else:
-        fig.add_trace(
-            go.Scatter(
-                x=[0], y=[0],
-                mode="text",
-                text=["Aucune donnée"],
-                textposition="middle center",
-                showlegend=False
-            )
-        )
+    fig.add_trace(go.Bar(
+        x=df[y_col],
+        y=df[x_col],
+        orientation="h",
+        marker=dict(
+            color=colors,
+            line=dict(width=1, color="black"),
+            opacity=0.85,
+        ),
+        text=displayed_texts,  # Texte affiché sur les barres (le même pour toutes si non liste)
+        hovertext=hover_texts,  # Toutes les infos en hover
+        hovertemplate="%{hovertext}<extra></extra>",
+        textposition="auto",
+        textfont=dict(color="white", size=18),
+    ))
 
     fig.update_layout(
         xaxis_title=y_col,
@@ -76,12 +66,6 @@ def create_barplot(df: pd.DataFrame, x_col: str, y_col: str, hoover: str = None,
     )
 
     return fig
-
-
-
-
-# Style global pour tout le script
-sns.set_theme(style="whitegrid")
 
 
 def create_histo_plot(df: pd.DataFrame, quantile_alpha: float):
@@ -118,6 +102,7 @@ def create_fc_emp_plot(df: pd.DataFrame, alpha: float):
     ax.set_ylabel("Probabilité cumulative")
     ax.grid(True)
     return fig
+
 
 def create_score_plot(data: dict) -> plt.Figure:
     """

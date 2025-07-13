@@ -15,17 +15,21 @@ columns:
     missing: 0
     min: 1.0
     max: 11.0
+    unique_values: 9
   GRD_MENAGE:
     type: Boolean
     missing: 0
+    unique_values: 2
   MONOPARENT:
     type: Boolean
     missing: 0
+    unique_values: 2
   NIVEAU_VIE:
     type: Float64
     missing: 0
     min: 0.03
     max: 261643.51
+    unique_values: 322415
   TILE_ID:
     type: String
     missing: 0
@@ -39,9 +43,11 @@ columns:
     missing: 0
     min: 0.0
     max: 105.0
+    unique_values: 106
   ADULT:
     type: Boolean
     missing: 0
+    unique_values: 2
   STATUT:
     type: String
     missing: 0

@@ -71,8 +71,8 @@ def save_yaml_metadata_from_dataframe(lf: pl.DataFrame, dataset_name: str = "dat
                 round(float(collected[f"{col}__max"][0]), 2)
                 if collected[f"{col}__max"][0] is not None else None
             )
-        elif dtype in {pl.Utf8, pl.Categorical}:
-            col_meta['unique_values'] = int(collected[f"{col}__unique"][0])
+
+        col_meta['unique_values'] = int(collected[f"{col}__unique"][0])
 
         metadata['columns'][col] = col_meta
 
@@ -90,9 +90,7 @@ def load_yaml_metadata(dataset_name: str = "dataset") -> dict:
     return metadata
 
 
-def intervalle_confiance_quantile(
-    dataset: pl.LazyFrame, req: dict, epsilon: float, vrai_tableau: pl.DataFrame
-):
+def intervalle_confiance_quantile(dataset: pl.LazyFrame, req: dict, epsilon: float, vrai_tableau: pl.DataFrame):
     variable = req.get("variable")
     bounds_min, bounds_max = req.get("bounds")
     alphas = [float(a) for a in req.get("alpha")]
@@ -675,11 +673,11 @@ def manual_quantile_score(data, candidats, alpha, et_si=False):
     return np.array(scores), max_alpha
 
 
-def get_weights(request: dict, input) -> dict:
+def get_weights(request: dict, dict_values) -> dict:
     # Étape 1 : récupération des poids bruts
     raw_weights = {
-        key: radio_to_weight.get(float(getattr(input, key)() or 0), 0)
-        for key in request
+        key: radio_to_weight.get(float(dict_values[key]), 0)
+        for key in request.keys()
     }
 
     # Étape 2 : normalisation initiale

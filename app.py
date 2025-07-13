@@ -7,13 +7,13 @@ from src.plots import (
 from src.layout.introduction_dp import page_introduction_dp
 from src.layout.donnees import page_donnees
 from src.layout.preparer_requetes import (
-    page_preparer_requetes, affichage_requete, calcul_requete
+    page_preparer_requetes, affichage_requete
 )
 from src.layout.conception_budget import page_conception_budget, make_radio_buttons
 from src.layout.resultat_dp import page_resultat_dp, afficher_resultats
 from src.layout.etat_budget_dataset import page_etat_budget_dataset
 from src.process_tools import (
-    process_request, calculer_toutes_les_requetes
+    process_request, calculer_toutes_les_requetes, calcul_requete
 )
 from src.fonctions import (
     eps_from_rho_delta, optimization_boosted,
@@ -30,8 +30,8 @@ from src.constant import (
     borne_max_taille_dataset
 )
 
-from shiny import App, ui, render, reactive
-from shinywidgets import render_widget
+from shiny import App, ui, render, reactive, module
+from shinywidgets import render_plotly
 from pathlib import Path
 from datetime import datetime
 from scipy.stats import norm
@@ -54,55 +54,7 @@ data_example = sns.load_dataset("penguins").dropna()
 
 # 1. UI --------------------------------------
 app_ui = ui.page_navbar(
-    ui.head_content(
-        ui.tags.link(
-            rel="stylesheet",
-            href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css"
-        ),
-        ui.tags.style("""
-                .table {
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                    font-size: 0.9rem;
-                    box-shadow: 0 0 10px rgba(0,0,0,0.05);
-                    border-radius: 0.25rem;
-                    border-collapse: collapse;
-                    width: 100%;
-                    border: 1px solid #dee2e6;
-                }
-                .table-hover tbody tr:hover {
-                    background-color: #f1f1f1;
-                }
-                .table-striped tbody tr:nth-of-type(odd) {
-                    background-color: #fafafa;
-                }
-                table.table thead th {
-                    background-color: #f8f9fa !important;
-                    font-weight: 700 !important;
-                    border-left: 1px solid #dee2e6;
-                    border-right: 1px solid #dee2e6;
-                    border-bottom: 2px solid #dee2e6;
-                    padding: 0.3rem 0.6rem;
-                    vertical-align: middle !important;
-                    text-align: center;
-                    position: sticky;
-                    top: 0;
-                    z-index: 10;
-                }
-                tbody td {
-                    padding: 0.3rem 0.6rem;
-                    vertical-align: middle !important;
-                    text-align: center;
-                    border-left: 1px solid #dee2e6;
-                    border-right: 1px solid #dee2e6;
-                }
-                thead th:first-child, tbody td:first-child {
-                    border-left: none;
-                }
-                thead th:last-child, tbody td:last-child {
-                    border-right: none;
-                }
-            """)
-    ),
+    ui.head_content(ui.include_css(f"{www_dir}/my_style.css")),
     ui.nav_spacer(),
     page_introduction_dp(),
     page_donnees(),
@@ -111,14 +63,67 @@ app_ui = ui.page_navbar(
     page_resultat_dp(),
     page_etat_budget_dataset(),
     title=ui.div(
-        ui.img(src="insee-logo.png", height="80px", style="margin-right:10px"),
-        ui.img(src="Logo_poc.png", height="60px", style="margin-right:10px"),
+        ui.img(src="logo_insee.png", height="80px", style="margin-right:10px"),
+        ui.img(src="logo_poc.png", height="60px", style="margin-right:10px"),
         style="display: flex; align-items: center; gap: 10px;"
     ),
     id="page"
 )
 
 # 2. Server ----------------------------------
+
+
+@module.server
+def radio_buttons_server(input, output, session, type_req, requetes, req_calcul):
+    @output
+    @render.ui
+    def radio_buttons():
+        return ui.layout_columns(
+            *make_radio_buttons(requetes(), type_req, req_calcul()),
+            col_widths=3
+        )
+
+    def selected_values():
+        data_requetes = requetes()
+        req_type = {k: v for k, v in data_requetes.items() if v["type"] in type_req}
+        if req_type == {}:
+            return {}
+        return {key: input[key]() for key in req_type.keys()}
+
+    return selected_values
+
+
+@module.server
+def budget_req_server(input, output, session, dataframe, type_req):
+    @output
+    @render.data_frame
+    def table_req():
+        df = dataframe()
+        if df is not None and not df.empty:
+            if type_req != "Comptage":
+                df = df.drop(columns="label")
+            # Définir l'arrondi spécifique
+            arrondi = {col: 1 if col in ["cv moyen (%)", "biais relatif moyen (%)", "écart type comptage", "écart type bruit comptage"] else 0 for col in df.columns}
+            df = df.round(arrondi)
+        return df
+
+    @render_plotly
+    def plot_req():
+        df = dataframe()
+        hover_col = "label" if "label" in df.columns else "groupement"
+        if df is not None and not df.empty:
+            if type_req == "Comptage":
+                ycol = "écart type estimation"
+            elif type_req == "Quantile":
+                ycol = "taille moyenne IC 95%"
+                # Supposons qu'on veuille exclure "variable" ou une autre colonne du group_by
+                cols_to_group = ["requête", "label", "groupement", "filtre"]
+
+                # Moyenne des tailles d'IC par groupe
+                df = df.groupby(cols_to_group, dropna=False)["taille moyenne IC 95%"].mean().reset_index().dropna(axis=1, how="all")
+            else:
+                ycol = "cv moyen (%)"
+            return create_barplot(df, x_col="requête", y_col=ycol, hoover=hover_col, color="groupement")
 
 
 def server(input, output, session):
@@ -128,11 +133,6 @@ def server(input, output, session):
     resultats_df = reactive.Value({})
     onglet_actuel = reactive.Value("Conception du budget")  # Onglet par défaut
     trigger_update_budget = reactive.Value(0)
-
-    @reactive.Calc
-    def get_poids_req() -> dict[str, float]:
-        poids = get_weights(requetes(), input)
-        return poids
 
     @reactive.Calc
     def dict_query() -> dict[str, dict[str, Any]]:
@@ -350,19 +350,7 @@ def server(input, output, session):
                         "écart type estimation": query["scale"],
                         "écart type bruit": np.sqrt(query["sigma2"])
                     })
-
         return pd.DataFrame(results).dropna(axis=1, how="all").round(1)
-
-    @output
-    @render.data_frame
-    def table_comptage():
-        return df_comptage()
-
-    @render_widget
-    def plot_comptage():
-        df = df_comptage()
-        if df is not None and not df.empty:
-            return create_barplot(df, x_col="requête", y_col="écart type estimation", hoover="groupement", color="groupement")
 
     @reactive.Calc
     def conception_query_sum() -> dict[str, dict[str, Any]]:
@@ -474,23 +462,6 @@ def server(input, output, session):
                     break
         return pd.DataFrame(results).dropna(axis=1, how="all").round(1)
 
-    @output
-    @render.data_frame
-    def table_total():
-        df = df_total()
-        if df is not None and not df.empty:
-            df = df.drop(columns="label")
-            # Définir l'arrondi spécifique
-            arrondi = {col: 1 if col in ["cv moyen (%)", "biais relatif moyen (%)", "écart type comptage", "écart type bruit comptage"] else 0 for col in df.columns}
-            df = df.round(arrondi)
-        return df
-
-    @render_widget
-    def plot_total():
-        df = df_total()
-        if df is not None and not df.empty:
-            return create_barplot(df, x_col="requête", y_col="cv moyen (%)", hoover="label", color="groupement")
-
     @reactive.Calc
     def df_moyenne() -> dict[str, dict[str, Any]]:
         query_comptage = conception_query_count()
@@ -572,23 +543,6 @@ def server(input, output, session):
                     break
 
         return pd.DataFrame(results).dropna(axis=1, how="all").round(1)
-
-    @output
-    @render.data_frame
-    def table_moyenne():
-        df = df_moyenne()
-        if df is not None and not df.empty:
-            df = df.drop(columns="label")
-            # Définir l'arrondi spécifique
-            arrondi = {col: 1 if col in ["cv moyen (%)", "biais relatif moyen (%)", "écart type comptage", "écart type bruit comptage"] else 0 for col in df.columns}
-            df = df.round(arrondi)
-        return df
-
-    @render_widget
-    def plot_moyenne():
-        df = df_moyenne()
-        if df is not None and not df.empty:
-            return create_barplot(df, x_col="requête", y_col="cv moyen (%)", hoover="label", color="groupement")
 
     @reactive.Calc
     def df_ratio() -> dict[str, dict[str, Any]]:
@@ -695,23 +649,6 @@ def server(input, output, session):
 
         return pd.DataFrame(results).dropna(axis=1, how="all").round(1)
 
-    @output
-    @render.data_frame
-    def table_ratio():
-        df = df_ratio()
-        if df is not None and not df.empty:
-            df = df.drop(columns="label")
-            # Définir l'arrondi spécifique
-            arrondi = {col: 1 if col in ["cv moyen (%)", "biais relatif moyen (%)", "écart type comptage", "écart type bruit comptage"] else 0 for col in df.columns}
-            df = df.round(arrondi)
-        return df
-
-    @render_widget
-    def plot_ratio():
-        df = df_ratio()
-        if df is not None and not df.empty:
-            return create_barplot(df, x_col="requête", y_col="cv moyen (%)", hoover="label", color="groupement")
-
     @reactive.Calc
     def conception_query_quantile() -> dict[str, dict[str, Any]]:
 
@@ -763,27 +700,13 @@ def server(input, output, session):
                     "taille moyenne IC 95%": taille_ic,
                 })
 
-        return pd.DataFrame(results).round(1)
+        return pd.DataFrame(results).dropna(axis=1, how="all").round(1)
 
-    @output
-    @render.data_frame
-    def table_quantile():
-        df = df_quantile()
-        if df is not None and not df.empty:
-            df = df.drop(columns="label").dropna(axis=1, how="all").round(0)
-        return df
-
-    @render_widget
-    def plot_quantile():
-        df = df_quantile()
-        if not df.empty:
-            # Supposons qu'on veuille exclure "variable" ou une autre colonne du group_by
-            cols_to_group = ["requête", "label", "groupement", "filtre"]
-
-            # Moyenne des tailles d'IC par groupe
-            df = df.groupby(cols_to_group, dropna=False)["taille moyenne IC 95%"].mean().reset_index().dropna(axis=1, how="all")
-
-            return create_barplot(df, x_col="requête", y_col="taille moyenne IC 95%", hoover="label", color="groupement")
+    budget_req_server("Comptage", df_comptage, "Comptage")
+    budget_req_server("Total", df_total, "Total")
+    budget_req_server("Moyenne", df_moyenne, "Moyenne")
+    budget_req_server("Ratio", df_ratio, "Ratio")
+    budget_req_server("Quantile", df_quantile, "Quantile")
 
     @output
     @render.ui
@@ -896,6 +819,22 @@ def server(input, output, session):
             col: sorted(df[col].drop_nulls().unique().to_list())
             for col in list_var
         }
+
+    @reactive.Calc
+    def nb_modalite_var():
+        data_query = dict_query()
+        metadata_dict = yaml.safe_load(yaml_metadata_str()) if yaml_metadata_str() else {}
+        if 'columns' not in metadata_dict:
+            return {}
+
+        list_var = set(val for v in data_query.values() for val in v.get("by", []))
+
+        nb_modalites = {}
+        for col in list_var:
+            nb = metadata_dict['columns'][col].get('unique_values', None)
+            if nb is not None:
+                nb_modalites[col] = [i for i in range(nb)]
+        return nb_modalites
 
     # Lecture du json contenant les requêtes
     @reactive.effect
@@ -1096,6 +1035,8 @@ def server(input, output, session):
         type_req_a_afficher = input.affichage_req()
         data_requetes = requetes()
         if "TOUTES" in type_req_a_afficher:
+            if data_requetes == {}:
+                return ui.p("Aucune requête entrée.")
             return affichage_requete(data_requetes, req_calcul())
 
         req = {k: v for k, v in data_requetes.items() if v["type"] in type_req_a_afficher}
@@ -1368,45 +1309,24 @@ def server(input, output, session):
         buffer.seek(0)
         return buffer
 
-    @output
-    @render.ui
-    def radio_buttons_comptage():
-        return ui.layout_columns(
-            *make_radio_buttons(requetes(), ["Comptage"], req_calcul()),
-            col_widths=3
-        )
+    values_buttons_comptage = radio_buttons_server("Comptage", ["Comptage"], requetes, req_calcul)
 
-    @output
-    @render.ui
-    def radio_buttons_total():
-        return ui.layout_columns(
-            *make_radio_buttons(requetes(), ["Total"], req_calcul()),
-            col_widths=3
-        )
+    values_buttons_total = radio_buttons_server("Total", ["Total"], requetes, req_calcul)
 
-    @output
-    @render.ui
-    def radio_buttons_moyenne():
-        return ui.layout_columns(
-            *make_radio_buttons(requetes(), ["Moyenne"], req_calcul()),
-            col_widths=3
-        )
+    values_buttons_moyenne = radio_buttons_server("Moyenne", ["Moyenne"], requetes, req_calcul)
 
-    @output
-    @render.ui
-    def radio_buttons_ratio():
-        return ui.layout_columns(
-            *make_radio_buttons(requetes(), ["Ratio"], req_calcul()),
-            col_widths=3
-        )
+    values_buttons_ratio = radio_buttons_server("Ratio", ["Ratio"], requetes, req_calcul)
 
-    @output
-    @render.ui
-    def radio_buttons_quantile():
-        return ui.layout_columns(
-            *make_radio_buttons(requetes(), ["Quantile"], req_calcul()),
-            col_widths=3
-        )
+    values_buttons_quantile = radio_buttons_server("Quantile", ["Quantile"], requetes, req_calcul)
+
+    @reactive.Calc
+    def get_poids_req() -> dict[str, float]:
+        values_buttons = {
+            **values_buttons_comptage(), **values_buttons_total(),
+            **values_buttons_moyenne(), **values_buttons_ratio(), **values_buttons_quantile()
+        }
+        poids = get_weights(requetes(), values_buttons)
+        return poids
 
     @render.ui
     def ligne_conditionnelle():
@@ -1437,7 +1357,7 @@ def server(input, output, session):
 
 
 app = App(app_ui, server, static_assets=www_dir)
-# shiny run --reload shiny_app.py
-# shiny run --autoreload-port 8000 shiny_app.py
+# shiny run --reload --launch-browser app.py
+# shiny run --autoreload-port 8000 app.py
 
-# shiny run --port 5000 --host 0.0.0.0 shiny_app.py
+# shiny run --port 5000 --host 0.0.0.0 app.py

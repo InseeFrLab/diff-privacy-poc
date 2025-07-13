@@ -15,7 +15,7 @@ async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dic
 
         dp_result = process_request_dp(context_rho, context_eps, key_values, query)
         dp_result = dp_result.execute()
-        print(dp_result.summarize())
+        # print(dp_result.summarize())
         df_result = dp_result.release().collect()
 
         by = query.get("by")
@@ -30,6 +30,24 @@ async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dic
         current_results[key] = df_result.to_pandas()
 
     results_store.set(current_results)
+
+
+def calcul_requete(requetes, dataset):
+    df = dataset.lazy()
+    dict_results = {}
+
+    for key, req in requetes.items():
+        # Colonne de gauche : paramètres
+        resultat = process_request(df, req, use_bounds=False)
+
+        if req.get("by") is not None:
+            resultat = resultat.sort(by=req.get("by"))
+
+        resultat = resultat.to_pandas()
+
+        dict_results[key] = resultat
+
+    return dict_results
 
 
 def process_request_dp(context_rho, context_eps, key_values, req):

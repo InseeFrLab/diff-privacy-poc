@@ -1,28 +1,32 @@
-from shiny import ui
+from shiny import ui, module
 from shinywidgets import output_widget
 from src.constant import (
     regions_france, name_dataset
 )
-from htmltools import TagList, tags
+from htmltools import TagList, tags, HTMLDependency
 
-ICONS = {
-    "ellipsis": tags.span("ℹ️", style="cursor: pointer; color: blue; padding-left: 0.5em;")
-}
+bootstrap_icons_dep = HTMLDependency(
+    name="bootstrap-icons",
+    version="1.10.5",
+    source={"href": "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font"},
+    stylesheet=[{"href": "bootstrap-icons.css"}]
+)
+
 
 def page_conception_budget():
     return ui.nav_panel(
         "Conception du budget",
         ui.page_sidebar(
             sidebar_budget(),
-            bloc_budget_comptage(),
+            bloc_budget("Comptage", header="Répartition du budget pour les comptages"),
             ui.hr(),
-            bloc_budget_total(),
+            bloc_budget("Total", header="Répartition du budget pour les totaux"),
             ui.hr(),
-            bloc_budget_moyenne(),
+            bloc_budget("Moyenne", header="Répartition du budget pour les moyennes"),
             ui.hr(),
-            bloc_budget_ratio(),
+            bloc_budget("Ratio", header="Répartition du budget pour les ratio"),
             ui.hr(),
-            bloc_budget_quantile()
+            bloc_budget("Quantile", header="Répartition du budget pour les quantiles")
         )
     )
 
@@ -39,41 +43,22 @@ def sidebar_budget():
     )
 
 
-def bloc_budget_comptage():
-    return bloc_budget(header="Répartition du budget pour les comptages", type_req="comptage")
-
-
-def bloc_budget_total():
-    return bloc_budget(header="Répartition du budget pour les totaux", type_req="total")
-
-
-def bloc_budget_moyenne():
-    return bloc_budget(header="Répartition du budget pour les moyennes", type_req="moyenne")
-
-
-def bloc_budget_ratio():
-    return bloc_budget(header="Répartition du budget pour les ratio", type_req="ratio")
-
-
-def bloc_budget_quantile():
-    return bloc_budget(header="Répartition du budget pour les quantiles", type_req="quantile")
-
-
-def bloc_budget(header, type_req):
+@module.ui
+def bloc_budget(header):
     return ui.panel_well(
         ui.card(
             ui.card_header(header),
-            ui.output_ui(f"radio_buttons_{type_req}"),
+            ui.output_ui("radio_buttons"),
             ui.layout_columns(
                 ui.card(
-                    ui.output_data_frame(f"table_{type_req}"),
+                    ui.output_data_frame("table_req"),
                     full_screen=True
                 ),
                 ui.card(
-                    output_widget(f"plot_{type_req}"),
+                    output_widget("plot_req"),
                     full_screen=True
                 ),
-                col_widths=[6, 6]  # 2 colonnes égales
+                col_widths=[6, 6]
             )
         )
     )
@@ -116,7 +101,8 @@ def make_radio_buttons(request, filter_type: list[str], dict_results):
                     table_html,            # contenu du popover
                     title=f"{key}",
                     placement="right"
-                )
+                ),
+                bootstrap_icons_dep
             )
 
             # Le bouton radio enrichi

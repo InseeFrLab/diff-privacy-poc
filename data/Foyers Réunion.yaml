@@ -15,79 +15,96 @@ columns:
     missing: 0
     min: 1.0
     max: 11.0
+    unique_values: 9
   GRD_MENAGE:
     type: Boolean
     missing: 0
+    unique_values: 2
   MONOPARENT:
     type: Boolean
     missing: 0
+    unique_values: 2
   NB_ADULTS:
     type: Int64
     missing: 0
     min: 1.0
     max: 8.0
+    unique_values: 7
   NB_MINORS:
     type: Int64
     missing: 0
     min: 0.0
     max: 4.0
+    unique_values: 5
   ind_0_3:
     type: Int64
     missing: 0
     min: 0.0
     max: 4.0
+    unique_values: 5
   ind_4_5:
     type: Int64
     missing: 0
     min: 0.0
     max: 4.0
+    unique_values: 5
   ind_6_10:
     type: Int64
     missing: 0
     min: 0.0
     max: 4.0
+    unique_values: 5
   ind_11_17:
     type: Int64
     missing: 0
     min: 0.0
     max: 4.0
+    unique_values: 5
   ind_18_24:
     type: Int64
     missing: 0
     min: 0.0
     max: 4.0
+    unique_values: 5
   ind_25_39:
     type: Int64
     missing: 0
     min: 0.0
     max: 5.0
+    unique_values: 6
   ind_40_54:
     type: Int64
     missing: 0
     min: 0.0
     max: 5.0
+    unique_values: 6
   ind_55_64:
     type: Int64
     missing: 0
     min: 0.0
     max: 4.0
+    unique_values: 5
   ind_65_79:
     type: Int64
     missing: 0
     min: 0.0
     max: 4.0
+    unique_values: 5
   ind_80p:
     type: Int64
     missing: 0
     min: 0.0
     max: 3.0
+    unique_values: 4
   ind_inc:
     type: Int64
     missing: 0
     min: 0.0
     max: 4.0
+    unique_values: 5
   NIVEAU_VIE:
     type: Float64
     missing: 0
     min: 0.03
     max: 261643.51
+    unique_values: 322415

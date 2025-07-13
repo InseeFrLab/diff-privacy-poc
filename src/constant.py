@@ -9,7 +9,7 @@ storage_options: Dict[str, str] = {
     "endpoint_url": "https://minio.lab.sspcloud.fr",
 }
 
-choix_quantile = {
+choix_quantile: Dict[float, str] = {
     0: "Min",
     0.1: "D1",
     0.2: "D2",

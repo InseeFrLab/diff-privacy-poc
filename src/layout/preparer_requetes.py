@@ -1,7 +1,4 @@
 from shiny import ui
-from src.process_tools import (
-    process_request
-)
 
 
 def page_preparer_requetes():
@@ -156,21 +153,3 @@ def affichage_requete(requetes, dict_stockage):
         )
 
     return ui.accordion(*panels, open=True)
-
-
-def calcul_requete(requetes, dataset):
-    df = dataset.lazy()
-    dict_results = {}
-
-    for key, req in requetes.items():
-        # Colonne de gauche : paramètres
-        resultat = process_request(df, req, use_bounds=False)
-
-        if req.get("by") is not None:
-            resultat = resultat.sort(by=req.get("by"))
-
-        resultat = resultat.to_pandas()
-
-        dict_results[key] = resultat
-
-    return dict_results
