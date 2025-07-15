@@ -1,5 +1,4 @@
 from shiny import ui, module
-from shinywidgets import output_widget
 from src.constant import (
     regions_france, name_dataset
 )
@@ -18,17 +17,18 @@ def page_conception_budget():
         "Conception du budget",
         ui.page_sidebar(
             sidebar_budget(),
-            bloc_budget("Comptage", header="Répartition du budget pour les comptages"),
-            ui.hr(),
-            bloc_budget("Total", header="Répartition du budget pour les totaux"),
-            ui.hr(),
-            bloc_budget("Moyenne", header="Répartition du budget pour les moyennes"),
-            ui.hr(),
-            bloc_budget("Ratio", header="Répartition du budget pour les ratio"),
-            ui.hr(),
-            bloc_budget("Quantile", header="Répartition du budget pour les quantiles")
+            bloc_budget_ui("Comptage"),
+            bloc_budget_ui("Total"),
+            bloc_budget_ui("Moyenne"),
+            bloc_budget_ui("Ratio"),
+            bloc_budget_ui("Quantile")
         )
     )
+
+
+@module.ui
+def bloc_budget_ui():
+    return ui.output_ui("bloc_budget")
 
 
 def sidebar_budget():
@@ -40,27 +40,6 @@ def sidebar_budget():
         ui.input_action_button("valider_budget", "Valider le budget DP"),
         position="right",
         bg="#f8f8f8"
-    )
-
-
-@module.ui
-def bloc_budget(header):
-    return ui.panel_well(
-        ui.card(
-            ui.card_header(header),
-            ui.output_ui("radio_buttons"),
-            ui.layout_columns(
-                ui.card(
-                    ui.output_data_frame("table_req"),
-                    full_screen=True
-                ),
-                ui.card(
-                    output_widget("plot_req"),
-                    full_screen=True
-                ),
-                col_widths=[6, 6]
-            )
-        )
     )
 
 

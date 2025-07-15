@@ -1,0 +1,369 @@
+{
+  "req_1": {
+    "type": "Comptage"
+  },
+  "req_2": {
+    "type": "Comptage",
+    "by": [
+      "species"
+    ]
+  },
+  "req_3": {
+    "type": "Comptage",
+    "by": [
+      "island",
+      "species"
+    ]
+  },
+  "req_4": {
+    "type": "Comptage",
+    "by": [
+      "island",
+      "sex",
+      "species"
+    ]
+  },
+  "req_5": {
+    "type": "Comptage",
+    "by": [
+      "island",
+      "sex"
+    ]
+  },
+  "req_6": {
+    "type": "Comptage",
+    "by": [
+      "sex"
+    ]
+  },
+  "req_7": {
+    "type": "Comptage",
+    "by": [
+      "island"
+    ]
+  },
+  "req_8": {
+    "type": "Comptage",
+    "by": [
+      "sex",
+      "species"
+    ]
+  },
+  "req_9": {
+    "type": "Total",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ]
+  },
+  "req_10": {
+    "type": "Total",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "species"
+    ]
+  },
+  "req_11": {
+    "type": "Total",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "island",
+      "species"
+    ]
+  },
+  "req_12": {
+    "type": "Total",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "island",
+      "sex",
+      "species"
+    ]
+  },
+  "req_13": {
+    "type": "Total",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "island",
+      "sex"
+    ]
+  },
+  "req_14": {
+    "type": "Total",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "sex"
+    ]
+  },
+  "req_15": {
+    "type": "Total",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "sex",
+      "species"
+    ]
+  },
+  "req_16": {
+    "type": "Total",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "island"
+    ]
+  },
+  "req_17": {
+    "type": "Moyenne",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ]
+  },
+  "req_18": {
+    "type": "Moyenne",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "species"
+    ]
+  },
+  "req_19": {
+    "type": "Moyenne",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "island",
+      "species"
+    ]
+  },
+  "req_20": {
+    "type": "Moyenne",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "island",
+      "sex",
+      "species"
+    ]
+  },
+  "req_21": {
+    "type": "Moyenne",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "island",
+      "sex"
+    ]
+  },
+  "req_22": {
+    "type": "Moyenne",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "sex"
+    ]
+  },
+  "req_23": {
+    "type": "Moyenne",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "island"
+    ]
+  },
+  "req_24": {
+    "type": "Ratio",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "species"
+    ],
+    "variable_denominateur": "bill_length_mm",
+    "bounds_denominateur": [
+      32.1,
+      59.6
+    ]
+  },
+  "req_25": {
+    "type": "Ratio",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "island",
+      "species"
+    ],
+    "variable_denominateur": "bill_length_mm",
+    "bounds_denominateur": [
+      32.1,
+      59.6
+    ]
+  },
+  "req_26": {
+    "type": "Ratio",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "island",
+      "sex",
+      "species"
+    ],
+    "variable_denominateur": "bill_length_mm",
+    "bounds_denominateur": [
+      32.1,
+      59.6
+    ]
+  },
+  "req_27": {
+    "type": "Ratio",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "island",
+      "sex"
+    ],
+    "variable_denominateur": "bill_length_mm",
+    "bounds_denominateur": [
+      32.1,
+      59.6
+    ]
+  },
+  "req_28": {
+    "type": "Ratio",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "sex"
+    ],
+    "variable_denominateur": "bill_length_mm",
+    "bounds_denominateur": [
+      32.1,
+      59.6
+    ]
+  },
+  "req_29": {
+    "type": "Ratio",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "variable_denominateur": "bill_length_mm",
+    "bounds_denominateur": [
+      32.1,
+      59.6
+    ]
+  },
+  "req_30": {
+    "type": "Quantile",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "alpha": [0.5],
+    "nb_candidats": "300"
+  },
+  "req_31": {
+    "type": "Quantile",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "species"
+    ],
+    "alpha": [0.5],
+    "nb_candidats": "300"
+  },
+  "req_32": {
+    "type": "Quantile",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "island",
+      "sex",
+      "species"
+    ],
+    "alpha": [0.5],
+    "nb_candidats": "300"
+  },
+  "req_33": {
+    "type": "Quantile",
+    "variable": "body_mass_g",
+    "bounds": [
+      2700.0,
+      6300.0
+    ],
+    "by": [
+      "island",
+      "species"
+    ],
+    "alpha": [0.5],
+    "nb_candidats": "300"
+  }
+}

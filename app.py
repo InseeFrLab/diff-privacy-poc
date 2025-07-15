@@ -46,6 +46,7 @@ import io
 import json
 import yaml
 from typing import Any
+from shinywidgets import output_widget
 
 dp.enable_features("contrib")
 
@@ -72,7 +73,6 @@ app_ui = ui.page_navbar(
 )
 
 # 2. Server ----------------------------------
-
 
 @module.server
 def radio_buttons_server(input, output, session, type_req, requetes, req_calcul):
@@ -132,12 +132,42 @@ def budget_req_server(input, output, session, dataset, requetes, conception_coun
                 ycol = "taille moyenne IC 95%"
                 # Supposons qu'on veuille exclure "variable" ou une autre colonne du group_by
                 cols_to_group = ["requête", "label", "groupement", "filtre"]
+                existing_cols = [col for col in cols_to_group if col in df.columns]
 
                 # Moyenne des tailles d'IC par groupe
-                df = df.groupby(cols_to_group, dropna=False)["taille moyenne IC 95%"].mean().reset_index().dropna(axis=1, how="all")
+                df = df.groupby(existing_cols, dropna=False)["taille moyenne IC 95%"].mean().reset_index().dropna(axis=1, how="all")
             else:
                 ycol = "cv moyen (%)"
             return create_barplot(df, x_col="requête", y_col=ycol, hoover=hover_col, color="groupement")
+
+
+@module.server
+def bloc_budget_server(input, output, session, requetes, header, type_req):
+
+    def bloc_visible():
+        return any(req["type"] == type_req for req in requetes().values())
+
+    @output
+    @render.ui
+    def bloc_budget():
+        if bloc_visible():
+            return ui.panel_well(
+                ui.card(
+                    ui.card_header(header),
+                    ui.output_ui("radio_buttons"),
+                    ui.layout_columns(
+                        ui.card(
+                            ui.output_data_frame("table_req"),
+                            full_screen=True
+                        ),
+                        ui.card(
+                            output_widget("plot_req"),
+                            full_screen=True
+                        ),
+                        col_widths=[6, 6]
+                    )
+                )
+            )
 
 
 def server(input, output, session):
@@ -147,6 +177,12 @@ def server(input, output, session):
     resultats_df = reactive.Value({})
     onglet_actuel = reactive.Value("Conception du budget")  # Onglet par défaut
     trigger_update_budget = reactive.Value(0)
+
+    bloc_budget_server("Comptage", requetes, header="Répartition du budget pour les comptages", type_req="Comptage")
+    bloc_budget_server("Total", requetes, header="Répartition du budget pour les totaux", type_req="Total")
+    bloc_budget_server("Moyenne", requetes, header="Répartition du budget pour les moyennes", type_req="Moyenne")
+    bloc_budget_server("Ratio", requetes, header="Répartition du budget pour les ratios", type_req="Ratio")
+    bloc_budget_server("Quantile", requetes, header="Répartition du budget pour les quantiles", type_req="Quantile")
 
     @reactive.Calc
     def dict_query() -> dict[str, dict[str, Any]]:
