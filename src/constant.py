@@ -1,15 +1,14 @@
 import os
-from typing import Dict, List
 
 # Stockage des options S3 (MinIO)
-storage_options: Dict[str, str] = {
+storage_options: dict[str, str] = {
     "aws_access_key_id": os.environ["AWS_ACCESS_KEY_ID"],
     "aws_secret_access_key": os.environ["AWS_SECRET_ACCESS_KEY"],
     "aws_session_token": os.environ["AWS_SESSION_TOKEN"],
     "endpoint_url": "https://minio.lab.sspcloud.fr",
 }
 
-choix_quantile: Dict[float, str] = {
+choix_quantile: dict[float, str] = {
     0: "Min",
     0.1: "D1",
     0.2: "D2",
@@ -26,7 +25,7 @@ choix_quantile: Dict[float, str] = {
 }
 
 # Liste des régions françaises couvertes par les jeux de données
-regions_france: List[str] = [
+regions_france: list[str] = [
     "France entière",
     "Auvergne-Rhône-Alpes",
     "Bourgogne-Franche-Comté",
@@ -49,23 +48,27 @@ regions_france: List[str] = [
 ]
 
 # Liste des noms de jeux de données disponibles
-name_dataset: List[str] = [
+name_dataset: list[str] = [
     "Fidéli",
     "Filosofi",
     "Penguin"
 ]
 
 # Association entre clés d'identification et intitulés de jeux de données
-chemin_dataset = {
+chemin_dataset: dict[str, str] = {
     "penguins": "Palmer Penguins",
-    "s3://gferey/diffusion/synthetic-filo/METRO/households/households_METRO.parquet": "Foyers Métropole",
-    "s3://gferey/diffusion/synthetic-filo/METRO/population/population_METRO.parquet": "Population Métropole",
-    "s3://gferey/diffusion/synthetic-filo/974/households/households_974.parquet": "Foyers Réunion",
-    "s3://gferey/diffusion/synthetic-filo/974/population/population_974.parquet": "Population Réunion"
+    "s3://gferey/diffusion/synthetic-filo/METRO/households/households_METRO.parquet":
+        "Foyers Métropole",
+    "s3://gferey/diffusion/synthetic-filo/METRO/population/population_METRO.parquet":
+        "Population Métropole",
+    "s3://gferey/diffusion/synthetic-filo/974/households/households_974.parquet":
+        "Foyers Réunion",
+    "s3://gferey/diffusion/synthetic-filo/974/population/population_974.parquet":
+        "Population Réunion"
 }
 
 # Table de correspondance pour pondération dans l’interface utilisateur
-radio_to_weight: Dict[int, float] = {
+radio_to_weight: dict[int, float] = {
     1: 1.0,
     2: 0.5,
     3: 0.25

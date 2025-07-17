@@ -45,7 +45,7 @@ def bloc_bruit_gaussien():
             ui.div(
                 ui.input_slider(
                     "delta_slider",
-                    "Exposant de δ",
+                    ui.HTML("Exposant de \\( \\delta \\)"),
                     min=-10,
                     max=-1,
                     value=-3,
@@ -74,22 +74,31 @@ def bloc_score_quantile():
                     # Colonne 1 : texte explicatif
                     ui.div(
                         ui.HTML("""
-                            <div style='margin-top:20px; padding:10px; background-color:#f9f9f9; border-radius:12px;
-                                        font-family: "Raleway", "Garamond", sans-serif; font-size:16px; color:#333'>
-                                <p style="margin-bottom:10px">
-                                    <strong>Exemple d'application à la variable <em>body_mass_g</em> du dataset Penguins :</strong>
-                                </p>
+                        <div style='margin-top:20px; padding:10px; background-color:#f9f9f9; border-radius:12px;
+                                    font-family: "Raleway", "Garamond", sans-serif; font-size:16px; color:#333'>
+                            <p style="margin-bottom:10px">
+                                <strong>Exemple d'application à la variable <em>body_mass_g</em> du dataset Penguins :</strong>
+                            </p>
+                            <p style="margin-left:10px">
+                                La fonction de score utilisée est :
+                                <br><br>
                                 <p style="margin-left:10px">
-                                    La fonction de score utilisée est :
-                                    <br><br>
-                                    <strong>score</strong>(x, c, &alpha;) =<br>
-                                    − 10 000 &times; | ∑<sub>i=1</sub><sup>n</sup> 1<sub>{x<sub>i</sub> &lt; c}</sub> − &alpha; &times; (n − ∑<sub>i=1</sub><sup>n</sup> 1<sub>{x<sub>i</sub> = c}</sub>) |
+                                    \\[
+                                    \\begin{array}{c}
+                                    \\textbf{score}(x, c, \\alpha) = \\\\
+                                    -10\\,000 \\times \\left| \\sum_{i=1}^{n} \\mathbf{1}_{\\{x_i < c\\}} -
+                                    \\alpha \\times \\left(n - \\sum_{i=1}^{n} \\mathbf{1}_{\\{x_i = c\\}} \\right) \\right|
+                                    \\end{array}
+                                    \\]
                                 </p>
-                                <p style="margin-left:10px">
-                                    où <strong>α</strong> est l’ordre du quantile, et <strong>c</strong> un candidat et <strong>x</strong> notre variable d'intérêt de taille <strong>n</strong>.
-                                </p>
-                            </div>
-                            """),
+                            </p>
+                            <br><br>
+                            <p style="margin-left:10px">
+                                où \\( \\alpha \\) est l’ordre du quantile, \\( c \\) un candidat, et \\( x \\) notre variable d'intérêt
+                                de taille \\( n \\).
+                            </p>
+                        </div>
+                        """),
                         style="padding: 10px;"
                     ),
                     # Colonne 2 : première carte
@@ -115,11 +124,24 @@ def bloc_score_quantile():
                     # Colonne 1 : texte + sliders + équation
                     ui.div(
                         ui.HTML("<strong>Paramètres :</strong>"),
-                        ui.input_slider("epsilon_slider", "Budget epsilon :", min=0.01, max=5, value=0.5, step=0.01),
-                        ui.input_slider("alpha_slider", "Ordre du quantile :", min=0, max=1, value=0.5, step=0.01),
+
+                        # Ligne 1 : sliders epsilon et alpha côte à côte
+                        ui.layout_columns(
+                            ui.input_slider("epsilon_slider", "Budget epsilon :", min=0.01, max=5, value=0.5, step=0.01),
+                            ui.input_slider("alpha_slider", "Ordre du quantile :", min=0, max=1, value=0.5, step=0.01),
+                            col_widths=[6, 6]  # pour diviser la ligne en 2 colonnes égales
+                        ),
+
+                        # Ligne 2 : texte explicatif
                         ui.p("Définir le nombre de candidats susceptibles d'être tirés entre min et max de la variable :"),
-                        # Ligne horizontale pour les 3 champs
-                        ui.input_slider("candidat_slider", "Nombre de candidats", min=1, max=1000, value=100),
+
+                        # Ligne 3 : sliders min-max et nombre de candidats
+                        ui.layout_columns(
+                            ui.input_slider("min_max_slider", "Valeur min-max", min=0, max=10000, value=[3000, 6000]),
+                            ui.input_slider("candidat_slider", "Nombre de candidats", min=1, max=1000, value=100),
+                            col_widths=[6, 6]
+                        ),
+                        
                         style="padding: 10px; display: flex; flex-direction: column; gap: 20px;"
                     ),
                     # Colonne 2 : carte placeholder

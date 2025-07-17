@@ -153,3 +153,45 @@ def affichage_requete(requetes, dict_stockage):
         )
 
     return ui.accordion(*panels, open=True)
+
+
+def affichage_bouton(type_req: str, variables: dict, choix_quantile: dict):
+
+    contenu = []
+    variables.pop("🔤 Qualitatives", None)
+
+    label_variable = "Variable au numérateur:" if type_req == "Ratio" else "Variable:"
+    contenu.append(ui.column(
+        3,
+        ui.input_selectize(
+            "variable", label_variable,
+            choices=variables, options={"plugins": ["clear_button"]})
+        )
+    )
+
+    if type_req == "Ratio":
+        contenu.append(ui.column(
+            3,
+            ui.input_selectize(
+                "variable_denominateur", "Variable au dénominateur:",
+                choices=variables, options={"plugins": ["clear_button"]})
+            )
+        )
+
+    if type_req == "Quantile":
+        contenu.append(ui.column(
+            3,
+            ui.input_selectize(
+                "alpha", "Choix des quantiles:",
+                choices=choix_quantile, multiple=True)
+            )
+        )
+        contenu.append(ui.column(
+            3,
+            ui.input_numeric(
+                "nb_candidats", "Nombre de candidats:", 1000,
+                min=5, max=1_000_000, step=5)
+            )
+        )
+
+    return contenu

@@ -7,21 +7,22 @@ from src.plots import (
 from src.layout.introduction_dp import page_introduction_dp
 from src.layout.donnees import page_donnees
 from src.layout.preparer_requetes import (
-    page_preparer_requetes, affichage_requete
+    page_preparer_requetes, affichage_requete, affichage_bouton
 )
 from src.layout.conception_budget import page_conception_budget, make_radio_buttons
 from src.layout.resultat_dp import page_resultat_dp, afficher_resultats
 from src.layout.etat_budget_dataset import page_etat_budget_dataset
 from src.process_tools import (
-    process_request, calculer_toutes_les_requetes, calcul_requete,
+    process_request, calculer_toutes_les_requetes,
     df_comptage, df_total, df_moyenne, df_ratio, df_quantile
 )
 from src.fonctions import (
-    eps_from_rho_delta, optimization_boosted,
+    eps_from_rho_delta, optimisation_chaine,
     update_context, parse_filter_string,
     get_weights, intervalle_confiance_quantile,
     load_data, manual_quantile_score, extract_column_names_from_choices,
-    load_yaml_metadata
+    extract_bounds, same_base_request, same_quantile_params, same_ratio_params,
+    load_yaml_metadata, assert_or_notify
 )
 from src.constant import (
     storage_options,
@@ -31,7 +32,7 @@ from src.constant import (
     borne_max_taille_dataset
 )
 
-from shiny import App, ui, render, reactive, module
+from shiny import App, ui, render, reactive, module, Inputs, Outputs, Session
 from shinywidgets import render_plotly
 from pathlib import Path
 from datetime import datetime
@@ -47,6 +48,10 @@ import json
 import yaml
 from typing import Any
 from shinywidgets import output_widget
+from typing import Optional, Union
+import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+import textwrap
 
 dp.enable_features("contrib")
 
@@ -56,7 +61,13 @@ data_example = sns.load_dataset("penguins").dropna()
 
 # 1. UI --------------------------------------
 app_ui = ui.page_navbar(
-    ui.head_content(ui.include_css(f"{www_dir}/my_style.css")),
+    ui.head_content(
+        ui.include_css(f"{www_dir}/my_style.css"),
+        ui.tags.script(
+            src="https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML"
+        ),
+        ui.tags.script("if (window.MathJax) MathJax.Hub.Queue(['Typeset', MathJax.Hub]);")
+    ),
     ui.nav_spacer(),
     page_introduction_dp(),
     page_donnees(),
@@ -74,20 +85,27 @@ app_ui = ui.page_navbar(
 
 # 2. Server ----------------------------------
 
+
 @module.server
-def radio_buttons_server(input, output, session, type_req, requetes, req_calcul):
+def radio_buttons_server(
+    input: Inputs, output: Outputs, session: Session,
+    requetes: reactive.Value[dict[str, dict[str, Any]]],
+    req_calcul: reactive.calc
+):
+    type_req = session.ns
+
     @output
     @render.ui
-    def radio_buttons():
+    def radio_buttons() -> ui.TagList:
         return ui.layout_columns(
             *make_radio_buttons(requetes(), type_req, req_calcul()),
             col_widths=3
         )
 
-    def selected_values():
+    def selected_values() -> dict[str, str]:
         data_requetes = requetes()
-        req_type = {k: v for k, v in data_requetes.items() if v["type"] in type_req}
-        if req_type == {}:
+        req_type = {k: v for k, v in data_requetes.items() if v["type"] == type_req}
+        if not req_type:
             return {}
         return {key: input[key]() for key in req_type.keys()}
 
@@ -95,103 +113,133 @@ def radio_buttons_server(input, output, session, type_req, requetes, req_calcul)
 
 
 @module.server
-def budget_req_server(input, output, session, dataset, requetes, conception_count, conception_sum, conception_quantile, type_req):
-    @reactive.Calc
-    def dataframe():
-        if type_req == "Comptage":
-            return df_comptage(requetes, conception_count)
-        elif type_req == "Total":
-            return df_total(dataset, requetes, conception_count, conception_sum)
-        elif type_req == "Moyenne":
-            return df_moyenne(dataset, requetes, conception_count, conception_sum)
-        elif type_req == "Ratio":
-            return df_ratio(dataset, requetes, conception_count, conception_sum)
-        elif type_req == "Quantile":
-            return df_quantile(conception_quantile)
+def budget_req_server(
+    input: Inputs, output: Outputs, session: Session,
+    dataset: reactive.calc,
+    requetes: reactive.Value[dict[str, dict[str, Any]]],
+    conception_count: reactive.Value[dict[str, dict[str, Any]]],
+    conception_sum: reactive.Value[dict[str, dict[str, Any]]],
+    conception_quantile: reactive.Value[dict[str, dict[str, Any]]]
+):
+    type_req = session.ns
+
+    @reactive.calc
+    def dataframe() -> pd.DataFrame:
+        # Table de correspondance entre type_req et fonction de calcul
+        dispatch = {
+            "Comptage": lambda: df_comptage(requetes, conception_count),
+            "Total": lambda: df_total(dataset, requetes, conception_count, conception_sum),
+            "Moyenne": lambda: df_moyenne(dataset, requetes, conception_count, conception_sum),
+            "Ratio": lambda: df_ratio(dataset, requetes, conception_count, conception_sum),
+            "Quantile": lambda: df_quantile(conception_quantile),
+        }
+
+        return dispatch[type_req]()
 
     @output
     @render.data_frame
-    def table_req():
+    def table_req() -> pd.DataFrame:
         df = dataframe()
-        if df is not None and not df.empty:
+        if not df.empty:
             if type_req != "Comptage":
                 df = df.drop(columns="label")
             # Définir l'arrondi spécifique
-            arrondi = {col: 1 if col in ["cv moyen (%)", "biais relatif moyen (%)", "écart type comptage", "écart type bruit comptage"] else 0 for col in df.columns}
+            cols = [
+                "cv moyen (%)", "biais relatif moyen (%)",
+                "écart type comptage", "écart type bruit comptage"
+            ]
+
+            arrondi = {col: 1 if col in cols else 0 for col in df.columns}
             df = df.round(arrondi)
-        return df
+            return df
 
     @render_plotly
-    def plot_req():
+    def plot_req() -> go.Figure:
         df = dataframe()
-        hover_col = "label" if "label" in df.columns else "groupement"
-        if df is not None and not df.empty:
+        textcol = "label" if "label" in df.columns else "groupement"
+
+        if not df.empty:
             if type_req == "Comptage":
                 ycol = "écart type estimation"
+
             elif type_req == "Quantile":
                 ycol = "taille moyenne IC 95%"
-                # Supposons qu'on veuille exclure "variable" ou une autre colonne du group_by
                 cols_to_group = ["requête", "label", "groupement", "filtre"]
                 existing_cols = [col for col in cols_to_group if col in df.columns]
 
                 # Moyenne des tailles d'IC par groupe
-                df = df.groupby(existing_cols, dropna=False)["taille moyenne IC 95%"].mean().reset_index().dropna(axis=1, how="all")
+                df = (
+                    df.groupby(existing_cols, dropna=False)["taille moyenne IC 95%"]
+                    .mean().reset_index().dropna(axis=1, how="all")
+                )
             else:
                 ycol = "cv moyen (%)"
-            return create_barplot(df, x_col="requête", y_col=ycol, hoover=hover_col, color="groupement")
+            return create_barplot(df, x_col="requête", y_col=ycol, text=textcol, color="groupement")
 
 
 @module.server
-def bloc_budget_server(input, output, session, requetes, header, type_req):
+def bloc_budget_server(
+    input: Inputs, output: Outputs, session: Session,
+    requetes: reactive.Value[dict[str, dict[str, Any]]], header: str, type_req: str
+):
 
-    def bloc_visible():
+    def bloc_visible() -> bool:
         return any(req["type"] == type_req for req in requetes().values())
 
     @output
     @render.ui
-    def bloc_budget():
+    def bloc_budget() -> ui.TagList:
         if bloc_visible():
             return ui.panel_well(
                 ui.card(
                     ui.card_header(header),
                     ui.output_ui("radio_buttons"),
                     ui.layout_columns(
-                        ui.card(
-                            ui.output_data_frame("table_req"),
-                            full_screen=True
-                        ),
-                        ui.card(
-                            output_widget("plot_req"),
-                            full_screen=True
-                        ),
+                        ui.card(ui.output_data_frame("table_req"), full_screen=True),
+                        ui.card(output_widget("plot_req"), full_screen=True),
                         col_widths=[6, 6]
                     )
                 )
             )
 
 
-def server(input, output, session):
+def server(input: Inputs, output: Outputs, session: Session):
 
-    requetes = reactive.Value({})
-    page_autorisee = reactive.Value(False)
-    resultats_df = reactive.Value({})
-    onglet_actuel = reactive.Value("Conception du budget")  # Onglet par défaut
-    trigger_update_budget = reactive.Value(0)
+    requetes: reactive.Value[dict[str, dict[str, Any]]] = reactive.Value({})
+    page_autorisee: reactive.Value[bool] = reactive.Value(False)
+    resultats_df: reactive.Value[dict[str, pd.Dataframe]] = reactive.Value({})
+    onglet_actuel: reactive.Value[str] = reactive.Value("Conception du budget")  # Onglet par défaut
+    trigger_update_budget: reactive.Value[int] = reactive.Value(0)
 
-    bloc_budget_server("Comptage", requetes, header="Répartition du budget pour les comptages", type_req="Comptage")
-    bloc_budget_server("Total", requetes, header="Répartition du budget pour les totaux", type_req="Total")
-    bloc_budget_server("Moyenne", requetes, header="Répartition du budget pour les moyennes", type_req="Moyenne")
-    bloc_budget_server("Ratio", requetes, header="Répartition du budget pour les ratios", type_req="Ratio")
-    bloc_budget_server("Quantile", requetes, header="Répartition du budget pour les quantiles", type_req="Quantile")
+    bloc_budget_server(
+        "Comptage", requetes, header="Répartition du budget pour les comptages", type_req="Comptage"
+    )
+    bloc_budget_server(
+        "Total", requetes, header="Répartition du budget pour les totaux", type_req="Total"
+    )
+    bloc_budget_server(
+        "Moyenne", requetes, header="Répartition du budget pour les moyennes", type_req="Moyenne"
+    )
+    bloc_budget_server(
+        "Ratio", requetes, header="Répartition du budget pour les ratios", type_req="Ratio"
+    )
+    bloc_budget_server(
+        "Quantile", requetes, header="Répartition du budget pour les quantiles", type_req="Quantile"
+    )
 
-    @reactive.Calc
+    # To DO
+    @reactive.calc
     def dict_query() -> dict[str, dict[str, Any]]:
         data_requetes = requetes()
-        req_comptage_quantile = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["comptage", "quantile"]}
-        req_total_moyenne = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["moyenne", "total"]}
-        req_ratio = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["ratio"]}
+        req_comptage_quantile = {
+            k: v for k, v in data_requetes.items() if v["type"].lower() in ["comptage", "quantile"]}
+        req_total_moyenne = {
+            k: v for k, v in data_requetes.items() if v["type"].lower() in ["moyenne", "total"]}
+        req_ratio = {
+            k: v for k, v in data_requetes.items() if v["type"].lower() in ["ratio"]}
         query = {}
         i = 1
+
         for (key, request) in req_comptage_quantile.items():
             query_request = request.copy()
             query_request["req"] = [key]
@@ -344,124 +392,68 @@ def server(input, output, session):
                 params["sigma2"] = (U - L)**2/(4 * 2 * input.budget_total() * params["poids"])
         return query
 
-    @reactive.Calc
+    @reactive.calc
     def conception_query_count() -> dict[str, dict[str, Any]]:
         data_query = dict_query()
+        query_comptage = {k: v for k, v in data_query.items()if v["type"].lower() == "comptage"}
+        return optimisation_chaine(query_comptage, key_values())
 
-        # Sélection des requêtes de type "comptage"
-        query_comptage = {
-            k: v for k, v in data_query.items()
-            if v["type"].lower() in ["count", "comptage"]
-        }
-
-        # Récupération des filtres distincts
-        filtres_uniques = set(v.get("filtre") for v in query_comptage.values())
-
-        # Dictionnaire final fusionné
-        requetes_finales: dict[str, dict[str, Any]] = {}
-
-        for filtre in filtres_uniques:
-            # Sous-ensemble des requêtes avec ce filtre
-            query_filtre = {
-                k: v for k, v in query_comptage.items()
-                if v.get("filtre") == filtre
-            }
-
-            # Optimisation spécifique à ce groupe
-            query_filtre_opt = optimization_boosted(dict_query=query_filtre, modalite=key_values())
-
-            # Ajout explicite du filtre dans chaque requête
-            query_filtre_opt = {
-                k: {**v, "filtre": filtre}
-                for k, v in query_filtre_opt.items()
-            }
-
-            # Fusion dans le dictionnaire final
-            requetes_finales.update(query_filtre_opt)
-
-        return requetes_finales
-
-    @reactive.Calc
+    @reactive.calc
     def conception_query_sum() -> dict[str, dict[str, Any]]:
         data_query = dict_query()
+        query_total = {k: v for k, v in data_query.items() if v["type"].lower() == "total"}
+        return optimisation_chaine(query_total, key_values())
 
-        query_total = {k: v for k, v in data_query.items() if v["type"].lower() in ["total", "sum", "somme"]}
-
-        # Récupération des filtres distincts
-        filtres_uniques = set(v.get("filtre") for v in query_total.values())
-
-        # Récupération des variables distinctes
-        variables_uniques = set(v["variable"] for v in query_total.values())
-
-        # Dictionnaire final fusionné
-        requetes_finales: dict[str, dict[str, Any]] = {}
-
-        for filtre in filtres_uniques:
-            for variable in variables_uniques:
-
-                query_filtre_variable = {
-                    k: v for k, v in query_total.items()
-                    if v["variable"] == variable and v.get("filtre") == filtre
-                }
-                query_filtre_variable_opt = optimization_boosted(dict_query=query_filtre_variable, modalite=key_values())
-
-                # Ajout explicite du filtre dans chaque requête
-                query_filtre_variable_opt = {
-                    k: {**v, "filtre": filtre}
-                    for k, v in query_filtre_variable_opt.items()
-                }
-
-                # Fusion dans le dictionnaire final
-                requetes_finales.update(query_filtre_variable_opt)
-
-        return requetes_finales
-
-    @reactive.Calc
+    @reactive.calc
     def conception_query_quantile() -> dict[str, dict[str, Any]]:
-
         data_query = dict_query()
-        query_quantile = {k: v for k, v in data_query.items() if v["type"].lower() in ["quantile"]}
-
-        # Récupération des filtres distincts
+        query_quantile = {k: v for k, v in data_query.items() if v["type"].lower() == "quantile"}
         filtres_uniques = set(v.get("filtre") for v in query_quantile.values())
-
-        variables_uniques = set(v["variable"] for v in query_quantile.values())
+        variables_uniques = set(v.get("variable") for v in query_quantile.values())
 
         for filtre in filtres_uniques:
             for variable in variables_uniques:
                 query_filtre_variable = {
                     k: v for k, v in query_quantile.items()
-                    if v["variable"] == variable and v.get("filtre") == filtre
+                    if v.get("variable") == variable and v.get("filtre") == filtre
                 }
 
                 for key_query, query in query_filtre_variable.items():
 
-                    budget_req_quantile = input.budget_total() * query["poids"]
+                    budget_req_quantile = input.budget_total() * query.get("poids", 0)
                     epsilon = np.sqrt(8 * budget_req_quantile)
 
-                    vrai_tableau = process_request(dataset().lazy(), query, use_bounds=False)
-
-                    ic = intervalle_confiance_quantile(dataset().lazy(), query, epsilon, vrai_tableau)
-
+                    vrai_tableau = process_request(dataset(), query, use_bounds=False)
+                    ic = intervalle_confiance_quantile(dataset(), query, epsilon, vrai_tableau)
                     query_quantile[key_query]["scale"] = ic
+
         return query_quantile
 
     @output
     @render.ui
     @reactive.event(input.confirm_validation)
-    async def req_dp_display():
+    async def req_dp_display() -> ui.TagList:
 
         data_query = dict_query()
-        data_lazy = dataset().lazy()
+        data_lazy = dataset()
+        keys = key_values()
 
-        # 🔍 Extraire toutes les colonnes mentionnées dans les requêtes
+        # Extraire toutes les colonnes mentionnées dans les requêtes
         vars_by = {val for req in data_query.values() for val in req.get("by", [])}
-        vars_variable = {v for v in (req.get("variable") for req in data_query.values()) if v is not None}
+        vars_variable = {
+            v for v in (req.get("variable") for req in data_query.values())
+            if v is not None
+        }
         selected_columns = set(vars_by | vars_variable)  # union des deux ensembles
 
-        # 🐍 Sous-échantillon propre du LazyFrame
+        # Sous-échantillon propre du LazyFrame
         if not selected_columns:
-            filtered_lazy = data_lazy.with_columns(pl.lit(1).alias("__dummy")).select("__dummy").collect().lazy()
+            filtered_lazy = (
+                data_lazy.with_columns(pl.lit(1).alias("__dummy"))
+                .select("__dummy")
+                .collect()
+                .lazy()
+            )
 
         else:
             filtered_lazy = data_lazy.select(selected_columns).collect().lazy()
@@ -475,70 +467,94 @@ def server(input, output, session):
                     "margins": [dp.polars.Margin(max_partition_length=borne_max_taille_dataset)],
                 }
 
-            context_rho, context_eps = update_context(context_param, input.budget_total(), data_query)
+            context_rho, context_eps = update_context(
+                context_param, input.budget_total(), data_query
+            )
 
-            await calculer_toutes_les_requetes(context_rho, context_eps, key_values(), data_query, p, resultats_df)
+            await calculer_toutes_les_requetes(
+                context_rho, context_eps, keys, data_query, p, resultats_df
+            )
 
-        return afficher_resultats(resultats_df, requetes(), data_query, key_values())
+        return afficher_resultats(resultats_df, requetes(), data_query, keys)
 
-    # Page 1 ----------------------------------
-
-    # Lire le dataset si importé sinon dataset déjà en mémoire
-    @reactive.Calc
-    def dataset() -> pl.DataFrame:
+    @reactive.calc
+    def dataset() -> pl.LazyFrame:
+        """
+        Charge un dataset depuis un fichier utilisateur (CSV ou Parquet)
+        ou bien depuis un jeu de données par défaut.
+        """
         file = input.dataset_input()
         if file is not None:
             ext = Path(file["name"]).suffix
             if ext == ".csv":
-                return pl.read_csv(file["datapath"])
+                return pl.read_csv(file["datapath"]).lazy()
             elif ext == ".parquet":
                 return load_data(file["datapath"], storage_options)
             else:
-                raise ValueError("Format non supporté : utiliser CSV ou Parquet")
-        else:
-            if input.default_dataset() == "penguins":
-                return pl.DataFrame(sns.load_dataset(input.default_dataset()).dropna())
-            else:
-                return load_data(input.default_dataset(), storage_options)
+                raise ValueError("❌ Format non supporté : utiliser CSV ou Parquet")
 
-    @reactive.Calc
-    def yaml_metadata_str():
+        # Si aucun fichier fourni, charger le jeu par défaut
+        default = input.default_dataset()
+        if default == "penguins":
+            return pl.DataFrame(sns.load_dataset("penguins").dropna()).lazy()
+        else:
+            return load_data(default, storage_options)
+
+    @reactive.calc
+    def yaml_metadata_str() -> str | None:
+        """
+        Retourne les métadonnées YAML en chaîne formatée.
+        """
         chemin = chemin_dataset.get(input.default_dataset())
         metadata = load_yaml_metadata(chemin)
-        return yaml.dump(metadata, sort_keys=False, allow_unicode=True)
+        return yaml.dump(metadata, sort_keys=False, allow_unicode=True) if metadata else None
 
-    # Afficher le dataset
     @output
     @render.data_frame
-    def data_view():
-        return dataset().head(1000)
+    def data_view() -> pl.DataFrame:
+        return dataset().limit(500).collect()
 
-    # Afficher les métadata
     @output
     @render.text
-    def meta_data():
-        return ui.tags.pre(yaml_metadata_str())
+    def meta_data() -> ui.Tag:
+        """
+        Affiche les métadonnées YAML sous forme préformatée,
+        ou un message si aucune métadonnée n’est disponible.
+        """
+        metadata = yaml_metadata_str()
 
-    # Page 2 ----------------------------------
+        if not metadata:
+            return ui.tags.em("Aucune métadonnée disponible.")
 
-    # Liste les variables qualitatives et quatitatives du jeu de données actuel
-    @reactive.Calc
-    def variable_choices():
-        df = dataset()
+        return ui.tags.div(
+            ui.tags.p("Métadonnées YAML :"),
+            ui.tags.pre(metadata)
+        )
+
+    @reactive.calc
+    def variable_choices() -> dict[str, Union[str, dict[str, str]]]:
+        """
+        Retourne un dictionnaire catégorisé des variables du dataset,
+        distinguant qualitatives et quantitatives.
+        """
+        df = dataset().limit(1).collect()  # Uniquement 1 ligne pour les dtypes
         if df is None:
             return {}
 
+        qualitative_types = {pl.Utf8, pl.Categorical, pl.Boolean}
+        quantitative_types = {
+            pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+            pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+            pl.Float32, pl.Float64
+        }
+
         qualitative = [
-            col for col, dtype in zip(df.columns, df.dtypes)
-            if dtype in (pl.Utf8, pl.Categorical, pl.Boolean)
+            col for col, dtype in zip(df.columns, df.dtypes) if dtype in qualitative_types
+        ]
+        quantitative = [
+            col for col, dtype in zip(df.columns, df.dtypes) if dtype in quantitative_types
         ]
 
-        quantitative = [
-            col for col, dtype in zip(df.columns, df.dtypes)
-            if dtype in (pl.Int8, pl.Int16, pl.Int32, pl.Int64,
-                        pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
-                        pl.Float32, pl.Float64)
-        ]
         return {
             "": "",
             "🔤 Qualitatives": {col: col for col in qualitative},
@@ -546,54 +562,80 @@ def server(input, output, session):
         }
 
     # Extrait les modalités uniques des variables qualitatives
-    @reactive.Calc
-    def key_values():
-        df = dataset()
+    @reactive.calc
+    def key_values() -> dict[str, list[Any]]:
+        """
+        Pour chaque variable référencée dans les requêtes, retourne la liste triée
+        de ses modalités uniques dans le dataset, en excluant les valeurs nulles.
+        """
+        df = dataset().collect()
         data_query = dict_query()
-        list_var = set(val for v in data_query.values() for val in v.get("by", []))
+        variables = {val for v in data_query.values() for val in v.get("by", [])}
 
         # Extraire les modalités uniques, triées, sans NaN
         return {
             col: sorted(df[col].drop_nulls().unique().to_list())
-            for col in list_var
+            for col in variables
         }
 
-    @reactive.Calc
-    def nb_modalite_var():
+    @reactive.calc
+    def nb_modalite_var() -> dict[str, list[int]]:
+        """
+        Pour chaque variable dans les requêtes, retourne une liste
+        d'entiers de 0 à (nombre de modalités - 1).
+        Utilise les métadonnées YAML pour récupérer le nombre de modalités uniques par variable.
+        """
         data_query = dict_query()
-        metadata_dict = yaml.safe_load(yaml_metadata_str()) if yaml_metadata_str() else {}
-        if 'columns' not in metadata_dict:
+        metadata_str = yaml_metadata_str()
+        metadata_dict = yaml.safe_load(metadata_str) if metadata_str else {}
+
+        if not metadata_dict or 'columns' not in metadata_dict:
             return {}
 
-        list_var = set(val for v in data_query.values() for val in v.get("by", []))
+        # Extraire l'ensemble des variables référencées dans les requêtes (clé 'by')
+        variables = {val for v in data_query.values() for val in v.get("by", [])}
 
         nb_modalites = {}
-        for col in list_var:
-            nb = metadata_dict['columns'][col].get('unique_values', None)
-            if nb is not None:
-                nb_modalites[col] = [i for i in range(nb)]
+
+        for var in variables:
+            col_info = metadata_dict['columns'].get(var, {})
+            nb = col_info.get('unique_values')
+            if isinstance(nb, int) and nb > 0:
+                nb_modalites[var] = list(range(nb))
+
         return nb_modalites
 
-    # Lecture du json contenant les requêtes
     @reactive.effect
     @reactive.event(input.request_input)
-    def _():
+    def _() -> None:
+        """
+        Lit un fichier JSON chargé par l'utilisateur et met à jour la variable `requetes`.
+        Affiche une notification en cas d'erreur de décodage JSON.
+        """
         fileinfo = input.request_input()
-        if fileinfo is not None:
-            filepath = Path(fileinfo[0]["datapath"])
-            try:
-                with filepath.open(encoding="utf-8") as f:
-                    data = json.load(f)
+        if not fileinfo:
+            return
 
-                requetes.set(data)
-                ui.update_selectize("delete_req", choices=["Delete all"] + list(data.keys()))
-            except json.JSONDecodeError:
-                ui.notification_show("❌ Fichier JSON invalide", type="error")
+        filepath = Path(fileinfo[0]["datapath"])
+        try:
+            with filepath.open(encoding="utf-8") as f:
+                data = json.load(f)
 
-    # Téléchargement du json contenant les requêtes
+            requetes.set(data)
+            ui.update_selectize("delete_req", choices=["TOUTES"] + list(data.keys()))
+            ui.notification_show("✅ Requêtes importées avec succès", type="message")
+
+        except json.JSONDecodeError:
+            ui.notification_show("❌ Fichier JSON invalide", type="error")
+        except Exception as e:
+            ui.notification_show(f"❌ Erreur lors de l'import : {e}", type="error")
+
     @output
     @render.download(filename=lambda: "requetes_exportees.json")
-    def download_json():
+    def download_json() -> io.StringIO:
+        """
+        Exporte les requêtes courantes au format JSON, encodé en UTF-8 avec indentation.
+        """
         buffer = io.StringIO()
         json.dump(requetes(), buffer, indent=2, ensure_ascii=False)
         buffer.seek(0)
@@ -601,47 +643,29 @@ def server(input, output, session):
 
     @reactive.effect
     @reactive.event(input.add_req)
-    def _():
+    def _() -> None:
         current = requetes().copy()
         type_req = input.type_req()
 
-        if type_req == "":
-            ui.notification_show("❌ Aucun type de requête n'est spécifié", type="error")
+        if not assert_or_notify(type_req, "Aucun type de requête n'est spécifié"):
             return
 
-        # Charger les métadonnées YAML dans un dict (tu peux le faire une fois dans un Calc sinon)
         metadata_dict = yaml.safe_load(yaml_metadata_str()) if yaml_metadata_str() else {}
         variable = input.variable() if type_req != "Comptage" else None
         variable_denom = input.variable_denominateur() if type_req == "Ratio" else None
-
         nb_candidats = input.nb_candidats() if type_req == "Quantile" else None
 
-        # Vérifie si variable est vide ou None
-        if not variable and type_req != "Comptage":
-            ui.notification_show("❌ Aucune variable sélectionnée", type="error")
+        if not assert_or_notify(variable or type_req == "Comptage", "Aucune variable sélectionnée"):
             return
 
-        if not variable_denom and type_req == "Ratio":
-            ui.notification_show("❌ Aucune variable sélectionnée", type="error")
+        if not assert_or_notify(
+            variable_denom or type_req != "Ratio",
+            "Aucune variable sélectionnée"
+        ):
             return
 
-        bounds = None
-        bounds_denom = None
-
-        # Essayer de récupérer min/max dans YAML pour la variable choisie
-        if 'columns' in metadata_dict and variable in metadata_dict['columns']:
-            col_meta = metadata_dict['columns'][variable]
-            min_val = col_meta.get('min')
-            max_val = col_meta.get('max')
-            if min_val is not None and max_val is not None:
-                bounds = [float(min_val), float(max_val)]
-
-        if 'columns' in metadata_dict and variable_denom in metadata_dict['columns']:
-            col_meta = metadata_dict['columns'][variable_denom]
-            min_val = col_meta.get('min')
-            max_val = col_meta.get('max')
-            if min_val is not None and max_val is not None:
-                bounds_denom = [float(min_val), float(max_val)]
+        bounds = extract_bounds(metadata_dict, variable)
+        bounds_denom = extract_bounds(metadata_dict, variable_denom)
 
         # 🧪 Vérification syntaxique du filtre
         filtre_str = input.filtre()
@@ -650,7 +674,11 @@ def server(input, output, session):
                 all_columns = extract_column_names_from_choices(variable_choices())
                 _ = parse_filter_string(filtre_str, columns=all_columns)
             except Exception:
-                ui.notification_show("❌ Erreur dans le format du filtre : vérifiez les opérateurs et les noms de variables", type="error")
+                text = (
+                    "❌ Erreur dans le format du filtre : "
+                    "vérifiez les opérateurs et les noms de variables"
+                )
+                ui.notification_show(text, type="error")
                 return
 
         base_dict = {
@@ -664,16 +692,22 @@ def server(input, output, session):
         if type_req == 'Quantile':
             alpha = sorted(input.alpha())
 
-            if not nb_candidats:
-                ui.notification_show("❌ Nombre de valeurs candidates au quantile manquant", type="error")
+            if not assert_or_notify(
+                nb_candidats,
+                "Nombre de valeurs candidates au quantile manquant"
+            ):
                 return
 
-            if nb_candidats < 5:
-                ui.notification_show("❌ Nombre de valeurs candidates au quantile insuffisant", type="error")
+            if not assert_or_notify(
+                nb_candidats > 5,
+                "Nombre de valeurs candidates au quantile insuffisant"
+            ):
                 return
 
-            if not alpha:
-                ui.notification_show("❌ Pas de quantile sélectionné", type="error")
+            if not assert_or_notify(
+                alpha,
+                "Pas de quantile sélectionné"
+            ):
                 return
 
             base_dict.update({
@@ -682,8 +716,10 @@ def server(input, output, session):
             })
 
         elif type_req == 'Ratio':
-            if not variable_denom:
-                ui.notification_show("❌ Aucune variable sélectionnée", type="error")
+            if not assert_or_notify(
+                variable_denom,
+                "Aucune variable sélectionnée"
+            ):
                 return
 
             base_dict.update({
@@ -697,22 +733,11 @@ def server(input, output, session):
         }
 
         if any(
-            existing_req.get("type") == clean_dict.get("type") and
-            existing_req.get("variable") == clean_dict.get("variable") and
-            existing_req.get("bounds") == clean_dict.get("bounds") and
-            existing_req.get("by", []) == clean_dict.get("by", []) and
-            existing_req.get("filtre") == clean_dict.get("filtre") and
-            (
-                clean_dict.get("type") != "Quantile" or (
-                    existing_req.get("alpha") == clean_dict.get("alpha") and
-                    existing_req.get("nb_candidats") == clean_dict.get("nb_candidats")
-                )
-            ) and (
-                clean_dict.get("type") != "Ratio" or (
-                    existing_req.get("variable_denominateur") == clean_dict.get("variable_denominateur") and
-                    existing_req.get("bounds_denominateur") == clean_dict.get("bounds_denominateur")
-                )
-            )
+            same_base_request(existing_req, clean_dict)
+            and
+            (clean_dict.get("type") != "Quantile" or same_quantile_params(existing_req, clean_dict))
+            and
+            (clean_dict.get("type") != "Ratio" or same_ratio_params(existing_req, clean_dict))
             for existing_req in current.values()
         ):
             ui.notification_show("❌ Requête déjà existante (mêmes paramètres)", type="error")
@@ -726,27 +751,29 @@ def server(input, output, session):
         current[new_id] = clean_dict
         requetes.set(current)
         ui.notification_show(f"✅ Requête `{new_id}` ajoutée", type="message")
-        ui.update_selectize("delete_req", choices=["Delete all"] + list(requetes().keys()))
+        ui.update_selectize("delete_req", choices=["TOUTES"] + list(requetes().keys()))
 
     @reactive.effect
     @reactive.event(input.delete_btn)
-    def _():
+    def _() -> None:
+        """
+        Supprime les requêtes sélectionnées via le sélecteur 'delete_req'.
+        Gère les cas : aucune sélection, suppression partielle, suppression totale.
+        """
         current = requetes().copy()
-        targets = input.delete_req()  # ceci est une liste ou un tuple de valeurs
+        targets = input.delete_req()  # liste ou tuple de clés à supprimer
 
-        if not targets:
-            ui.notification_show("❌ Aucune requête sélectionnée", type="error")
+        if not assert_or_notify(targets, "Aucune requête sélectionnée"):
             return
 
-        if "Delete all" in targets:
+        if "TOUTES" in targets:
             current.clear()  # Vide toutes les requêtes
             requetes.set(current)  # Met à jour le reactive.Value
-            ui.notification_show(f"🗑️ TOUTES les requêtes ont été supprimé", type="warning")
+            ui.notification_show("🗑️ TOUTES les requêtes ont été supprimées.", type="warning")
             ui.update_selectize("delete_req", choices=[])
             return
 
-        removed = []
-        not_found = []
+        removed, not_found = [], []
         for target in targets:
             if target in current:
                 del current[target]
@@ -755,118 +782,188 @@ def server(input, output, session):
                 not_found.append(target)
 
         requetes.set(current)
+        ui.update_selectize("delete_req", choices=["TOUTES"] + list(requetes().keys()))
 
         if removed:
-            ui.notification_show(f"🗑️ Requête(s) supprimée(s) : {', '.join(removed)}", type="warning")
-            ui.update_selectize("delete_req", choices=["Delete all"] + list(requetes().keys()))
-        if not_found:
-            ui.notification_show(f"❌ Requête(s) introuvable(s) : {', '.join(not_found)}", type="error")
+            ui.notification_show(
+                f"🗑️ Requête(s) supprimée(s) : {', '.join(removed)}", type="warning")
 
-    @reactive.Calc
-    def req_calcul():
+        if not_found:
+            ui.notification_show(
+                f"❌ Requête(s) introuvable(s) : {', '.join(not_found)}", type="error")
+
+    @reactive.calc
+    def req_calcul() -> dict[str, pd.DataFrame]:
         data_requetes = requetes()
-        return calcul_requete(data_requetes, dataset())
+        dict_results = {}
+
+        for key, req in data_requetes.items():
+            resultat = process_request(dataset(), req, use_bounds=False).to_pandas()
+            dict_results[key] = resultat
+
+        return dict_results
 
     @output
     @render.ui
-    def req_display():
-        type_req_a_afficher = input.affichage_req()
+    def req_display() -> ui.TagList:
+        """
+        Affiche les requêtes sélectionnées selon leur type.
+        """
+        types_selectionnes = input.affichage_req()
         data_requetes = requetes()
-        if "TOUTES" in type_req_a_afficher:
-            if data_requetes == {}:
-                return ui.p("Aucune requête entrée.")
-            return affichage_requete(data_requetes, req_calcul())
 
-        req = {k: v for k, v in data_requetes.items() if v["type"] in type_req_a_afficher}
-        if req == {}:
+        # Pas de requêtes disponibles
+        if not data_requetes:
             return ui.p("Aucune requête entrée.")
-        return affichage_requete(req, req_calcul())
 
-    # Page 3 ----------------------------------
+        # Toutes les requêtes ou filtrées par type
+        if "TOUTES" in types_selectionnes:
+            requetes_affichees = data_requetes
+        else:
+            requetes_affichees = {
+                k: v for k, v in data_requetes.items()
+                if v["type"] in types_selectionnes
+            }
 
+        if not requetes_affichees:
+            return ui.p("Aucune requête entrée.")
+
+        return affichage_requete(requetes_affichees, req_calcul())
+
+    # TO DO
     @render.ui
-    def interval_summary():
+    def interval_summary() -> ui.Tag:
         sigma = input.scale_gauss()
         quantiles = [0.5, 0.75, 0.9, 0.95, 0.99]
         result_lines = []
+
         for q in quantiles:
             z = norm.ppf(0.5 + q / 2)
             bound = round(z * sigma, 3)
-            result_lines.append(f"<li><strong>{int(q * 100)}%</strong> de chances que le bruit soit entre +/- <code>{round(bound,1)}</code></li>")
+            line = (
+                f"<li><strong>{int(q * 100)}%</strong> de chances que le bruit soit entre "
+                f"+/- <code>{round(bound, 1)}</code></li>"
+            )
+            result_lines.append(line)
 
-        return ui.HTML("""
-            <div style='margin-top:20px; padding:10px; background-color:#f9f9f9; border-radius:12px; font-family: "Raleway", "Garamond", sans-serif; font-size:16px; color:#333'>
-                <p style="margin-bottom:10px"><strong>Résumé des intervalles de confiance :</strong></p>
+        box_style = (
+            "margin-top:20px; padding:10px; background-color:#f9f9f9; border-radius:12px; "
+            'font-family: "Raleway", "Garamond", sans-serif; font-size:16px; color:#333'
+        )
+
+        content = textwrap.dedent(f"""
+            <div style="{box_style}">
+                <p style="margin-bottom:10px">
+                    <strong>Résumé des intervalles de confiance :</strong>
+                </p>
                 <ul style="padding-left: 20px; margin: 0;">
-                    {}
-                </ul>
-            </div>
-        """.format("".join(result_lines)))
-
-    @output
-    @render.data_frame
-    def cross_table():
-        table = data_example.groupby(["species", "island"]).size().unstack(fill_value=0)
-        flat_table = table.reset_index().melt(id_vars="species", var_name="island", value_name="count")
-        return flat_table.sort_values(by=["species", "island"])
-
-    @output
-    @render.data_frame
-    @reactive.event(input.scale_gauss)
-    def cross_table_dp():
-        # Table originale sans bruit
-        table = data_example.groupby(["species", "island"]).size().unstack(fill_value=0)
-        flat_table = table.reset_index().melt(id_vars="species", var_name="island", value_name="count")
-        flat_table = flat_table.sort_values(by=["species", "island"]).reset_index(drop=True)
-
-        # Ajout de bruit gaussien à la colonne 'count'
-        sigma = input.scale_gauss()
-        flat_table["count"] = flat_table["count"] + np.random.normal(loc=0, scale=sigma, size=len(flat_table))
-
-        # Optionnel : arrondir ou tronquer selon les besoins
-        flat_table["count"] = flat_table["count"].round(0).clip(lower=0).astype(int)
-
-        return flat_table
-
-    @output
-    @render.ui
-    def dp_budget_summary():
-        rho = 1 / (2 * input.scale_gauss() ** 2)
-        delta_exp = input.delta_slider()
-        delta = f"1e{delta_exp}"
-        eps = eps_from_rho_delta(rho, 10**delta_exp)
-
-        return ui.HTML(f"""
-            <div style='margin-top:20px; padding:10px; background-color:#f9f9f9; border-radius:12px;
-                        font-family: "Raleway", "Garamond", sans-serif; font-size:16px; color:#333'>
-                <p style="margin-bottom:10px"><strong>Budget de confidentialité différentielle :</strong></p>
-                <ul style="padding-left: 20px; margin: 0;">
-                    <li>En zCDP, <strong>ρ</strong> = <code>{rho:.4f}</code></li>
-                    <li>Ou bien, (<strong>ε</strong> = <code>{eps:.3f}</code>, <strong>δ</strong> = <code>{delta}</code>)</li>
+                    {''.join(result_lines)}
                 </ul>
             </div>
         """)
 
+        return ui.HTML(content)
+
+    @output
+    @render.data_frame
+    def cross_table() -> pd.DataFrame:
+        """
+        Calcule un tableau croisé entre 'species' et 'island'.
+        """
+        table = (
+            data_example
+            .groupby(["species", "island"])
+            .size()
+            .unstack(fill_value=0)
+        )
+        flat_table = (
+            table
+            .reset_index()
+            .melt(id_vars="species", var_name="island", value_name="count")
+            .sort_values(["species", "island"])
+            .reset_index(drop=True)
+            .sort_values(by=["species", "island"])
+        )
+        return flat_table
+
+    @output
+    @render.data_frame
+    @reactive.event(input.scale_gauss)
+    def cross_table_dp() -> pd.DataFrame:
+        """
+        Calcule un tableau croisé bruité entre 'species' et 'island',
+        avec ajout de bruit gaussien sur les effectifs.
+        """
+        # Table originale sans bruit
+        table = (
+            data_example
+            .groupby(["species", "island"])
+            .size()
+            .unstack(fill_value=0)
+        )
+        flat_table = (
+            table
+            .reset_index()
+            .melt(id_vars="species", var_name="island", value_name="count")
+            .sort_values(["species", "island"])
+            .reset_index(drop=True)
+        )
+
+        # Ajout de bruit gaussien à la colonne 'count'
+        sigma = input.scale_gauss()
+        bruit = np.random.normal(loc=0, scale=sigma, size=len(flat_table))
+        flat_table["count"] = (flat_table["count"] + bruit).round(0).clip(lower=0).astype(int)
+
+        return flat_table
+
+    @render.ui
+    def dp_budget_summary() -> ui.Tag:
+        rho = 1 / (2 * input.scale_gauss() ** 2)
+        delta_exp = input.delta_slider()
+        delta = f"10^{{{delta_exp}}}"
+        eps = eps_from_rho_delta(rho, 10**delta_exp)
+
+        box_style = (
+            "margin-top:20px; padding:10px; background-color:#f9f9f9; border-radius:12px; "
+            'font-family: "Raleway", "Garamond", sans-serif; font-size:16px; color:#333'
+        )
+
+        content = textwrap.dedent(f"""
+            <div style="{box_style}">
+                <p style="margin-bottom:10px">
+                    <strong>Budget de confidentialité différentielle :</strong>
+                </p>
+                <ul style="padding-left: 20px; margin: 0;">
+                    <li>En zCDP, \\( \\rho = {rho:.4f} \\)</li>
+                    <li>
+                        Ou bien, \\( \\varepsilon = {eps:.3f} \\), \\( \\delta = {delta} \\)
+                    </li>
+                </ul>
+            </div>
+        """)
+
+        return ui.TagList(
+            ui.HTML(content),
+            ui.tags.script("if (window.MathJax) MathJax.Hub.Queue(['Typeset', MathJax.Hub]);")
+        )
+
     @render.plot
-    def histo_plot():
+    def histo_plot() -> plt.Figure:
         return create_histo_plot(data_example, input.alpha_slider())
 
     @render.plot
-    def fc_emp_plot():
+    def fc_emp_plot() -> plt.Figure:
         return create_fc_emp_plot(data_example, input.alpha_slider())
 
-    @reactive.Calc
-    def score_proba_quantile():
+    @reactive.calc
+    def score_proba_quantile() -> pd.DataFrame:
         nb_candidat = input.candidat_slider()
         alpha = input.alpha_slider()
         epsilon = input.epsilon_slider()
-        df = data_example
-
-        L = df["body_mass_g"].min()
-        U = df["body_mass_g"].max()
+        L, U = input.min_max_slider()
 
         candidats = np.linspace(L, U, nb_candidat).tolist()
-        scores, sensi = manual_quantile_score(df['body_mass_g'], candidats, alpha=alpha, et_si=True)
+        scores, sensi = manual_quantile_score(data_example['body_mass_g'], candidats, alpha, True)
 
         # Probabilités exponentielles (mécanisme exponentiel)
         proba_non_norm = np.exp(-epsilon * scores / (2 * sensi))
@@ -884,54 +981,77 @@ def server(input, output, session):
         # Marquages
         top95_cumul = [i in top95_indices for i in range(len(candidats))]
 
-        return {
-            "candidats": candidats,
-            "scores": scores,
-            "proba": proba,
-            "top95_cumul": top95_cumul
-        }
+        df = pd.DataFrame({
+            "Candidat": candidats,
+            "Score": scores,
+            "Probabilité": proba,
+            "Top95": top95_cumul
+        })
+
+        return df
 
     @render.plot
-    def score_plot():
-        return create_score_plot(data=score_proba_quantile())
+    def score_plot() -> plt.Figure:
+        return create_score_plot(df=score_proba_quantile())
 
     @render.plot
-    def proba_plot():
-        return create_proba_plot(data=score_proba_quantile())
+    def proba_plot() -> plt.Figure:
+        return create_proba_plot(df=score_proba_quantile())
 
     @reactive.calc
-    def budgets_par_dataset():
+    def budgets_par_dataset() -> pd.DataFrame:
+        """
+        Calcule le budget total par dataset :
+        - somme sur 'France entière'
+        - maximum des sommes sur les autres échelles géographiques
+        Le total est la somme des deux.
+        """
         _ = trigger_update_budget()
-        df = pd.read_csv("data/budget_dp.csv")
+        try:
+            df = pd.read_csv("data/budget_dp.csv")
+        except FileNotFoundError:
+            return pd.DataFrame(columns=["nom_dataset", "budget_dp_rho"])
 
-        # somme budget pour France entière par dataset
-        df_france = df[df["echelle_geographique"] == "France entière"].groupby("nom_dataset", as_index=False)["budget_dp_rho"].sum()
-        df_france = df_france.rename(columns={"budget_dp_rho": "budget_france"})
+        # Budget cumulé pour "France entière"
+        df_france = (
+            df[df["echelle_geographique"] == "France entière"]
+            .groupby("nom_dataset", as_index=False)["budget_dp_rho"]
+            .sum()
+            .rename(columns={"budget_dp_rho": "budget_france"})
+        )
+        # Budget cumulé pour chaque autre échelle
+        df_autres = (
+            df[df["echelle_geographique"] != "France entière"]
+            .groupby(["nom_dataset", "echelle_geographique"], as_index=False)["budget_dp_rho"]
+            .sum()
+        )
 
-        # somme budget pour chaque autre échelle par dataset
-        df_autres = df[df["echelle_geographique"] != "France entière"].groupby(["nom_dataset", "echelle_geographique"], as_index=False)["budget_dp_rho"].sum()
+        # Pour chaque dataset, on garde le max des autres échelles
+        df_max_autres = (
+            df_autres.groupby("nom_dataset", as_index=False)["budget_dp_rho"]
+            .max()
+            .rename(columns={"budget_dp_rho": "budget_max_autres"})
+        )
 
-        # pour chaque dataset, on prend la valeur max des sommes sur les autres échelles
-        df_max_autres = df_autres.groupby("nom_dataset", as_index=False)["budget_dp_rho"].max()
-        df_max_autres = df_max_autres.rename(columns={"budget_dp_rho": "budget_max_autres"})
-
-        # merge budgets France entière et max autres échelles (outer pour ne rien perdre)
+        # Fusion des deux sources, puis somme
         df_merge = pd.merge(df_france, df_max_autres, on="nom_dataset", how="outer").fillna(0)
-
-        # somme finale
         df_merge["budget_dp_rho"] = df_merge["budget_france"] + df_merge["budget_max_autres"]
 
-        # on trie et on ne garde que ce qui nous intéresse
-        df_result = df_merge[["nom_dataset", "budget_dp_rho"]].sort_values("budget_dp_rho", ascending=False)
+        # Résultat final trié
+        df_result = df_merge.sort_values("budget_dp_rho", ascending=False)
 
         return df_result
 
     @output
     @render.ui
-    def budget_display():
+    def budget_display() -> ui.TagList:
+        """
+        Affiche les budgets par dataset sous forme de value boxes,
+        organisées en lignes de 4 colonnes maximum.
+        """
         df_grouped = budgets_par_dataset()
-
         boxes = []
+
         for _, row in df_grouped.iterrows():
             boxes.append(
                 ui.value_box(
@@ -950,53 +1070,72 @@ def server(input, output, session):
 
     @output
     @render.data_frame
-    def data_budget_view():
-        _ = trigger_update_budget()
-        return pd.read_csv("data/budget_dp.csv")
+    def data_budget_view() -> pd.DataFrame:
+        _ = trigger_update_budget()  # Pour prendre en compte la mise à jour du csv
+        fichier = Path("data/budget_dp.csv")
 
-    @reactive.Effect
+        if fichier.exists():
+            return pd.read_csv(fichier)
+        else:
+            return pd.DataFrame(
+                columns=["nom_dataset", "echelle_geographique", "date_ajout", "budget_dp_rho"]
+            )
+
+    @reactive.effect
     @reactive.event(input.confirm_validation)
-    def _():
-
+    def _() -> None:
+        """
+        Valide les entrées, ajoute une ligne au CSV si tout est correct, et redirige vers résultats.
+        """
         data_requetes = requetes()
 
-        if len(data_requetes) == 0:
-            ui.notification_show(f"❌ Vous devez rentrer au moins une requête avant d'accéder aux résultats.", type="error")
+        if not assert_or_notify(
+            len(data_requetes) > 0,
+            "Vous devez rentrer au moins une requête avant d'accéder aux résultats."
+        ):
+            return
 
-        elif input.budget_total() == 0:
-            ui.notification_show(f"❌ Vous devez valider un budget non nul avant d'accéder aux résultats.", type="error")
+        if not assert_or_notify(
+            input.budget_total() > 0,
+            "Vous devez valider un budget non nul avant d'accéder aux résultats."
+        ):
+            return
 
-        elif input.dataset_name() == "":
-            ui.notification_show(f"❌ Vous devez spécifier un nom au dataset.", type="error")
+        if not assert_or_notify(
+            input.dataset_name().strip(),
+            "Vous devez spécifier un nom au dataset."
+        ):
+            return
 
-        elif input.echelle_geo() == "":
-            ui.notification_show(f"❌ Vous devez spécifier l'échelle géographique de l'étude.", type="error")
+        if not assert_or_notify(
+            input.echelle_geo().strip(),
+            "Vous devez spécifier l'échelle géographique de l'étude."
+        ):
+            return
 
+        page_autorisee.set(True)
+        ui.modal_remove()
+        ui.update_navs("page", selected="Résultat DP")
+
+        ligne = pd.DataFrame([{
+            "nom_dataset": input.dataset_name(),
+            "echelle_geographique": input.echelle_geo(),
+            "date_ajout": datetime.now().strftime("%d/%m/%Y"),
+            "budget_dp_rho": input.budget_total()
+        }])
+
+        fichier = Path("data/budget_dp.csv")
+        if fichier.exists():
+            ligne.to_csv(fichier, mode="a", header=False, index=False, encoding="utf-8")
         else:
-            page_autorisee.set(True)
-            ui.modal_remove()
-            ui.update_navs("page", selected="Résultat DP")
+            ligne.to_csv(fichier, mode="w", header=True, index=False, encoding="utf-8")
 
-            nouvelle_ligne = pd.DataFrame([{
-                "nom_dataset": input.dataset_name(),
-                "echelle_geographique": input.echelle_geo(),
-                "date_ajout": datetime.now().strftime("%d/%m/%Y"),
-                "budget_dp_rho": input.budget_total()
-            }])
+        ui.notification_show("✅ Ligne ajoutée à `budget_dp.csv`", type="message")
+        trigger_update_budget.set(trigger_update_budget() + 1)  # 🔄 Déclenche la mise à jour
 
-            fichier = Path("data/budget_dp.csv")
-            if fichier.exists():
-                nouvelle_ligne.to_csv(fichier, mode="a", header=False, index=False, encoding="utf-8")
-            else:
-                nouvelle_ligne.to_csv(fichier, mode="w", header=True, index=False, encoding="utf-8")
-
-            ui.notification_show("✅ Ligne ajoutée à `budget_dp.csv`", type="message")
-            trigger_update_budget.set(trigger_update_budget() + 1)  # 🔄 Déclenche la mise à jour
-
-    # Stocker l'onglet actuel en réactif
-    @reactive.Effect
+    @reactive.effect
     @reactive.event(input.page)
-    def on_tab_change():
+    def on_tab_change() -> None:
         requested_tab = input.page()
         if requested_tab == "Résultat DP" and not page_autorisee():
             # Remettre l'onglet actif sur l'onglet précédent (empêche le changement)
@@ -1014,9 +1153,9 @@ def server(input, output, session):
             # Autoriser le changement d'onglet
             onglet_actuel.set(requested_tab)
 
-    @reactive.Effect
+    @reactive.effect
     @reactive.event(input.valider_budget)
-    def _():
+    def _() -> None:
         ui.modal_show(
             ui.modal(
                 "Êtes-vous sûr de vouloir valider le budget ? Cette action est irréversible.",
@@ -1029,69 +1168,76 @@ def server(input, output, session):
             )
         )
 
-    @reactive.Effect
+    @reactive.effect
     @reactive.event(input.cancel_validation)
-    def _():
+    def _() -> None:
         ui.modal_remove()
 
     @output
     @render.download(filename=lambda: "resultats_dp.xlsx")
-    def download_xlsx():
+    def download_xlsx() -> io.BytesIO:
+        """
+        Téléchargement des résultats au format Excel avec une feuille par clé.
+        """
         resultats = resultats_df()
         buffer = io.BytesIO()
 
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             for key, df in resultats.items():
-                df.to_excel(writer, sheet_name=str(key)[:31], index=False)
+                nom_feuille = str(key)[:31]  # Limite Excel : 31 caractères max
+                df.to_excel(writer, sheet_name=nom_feuille, index=False)
 
         buffer.seek(0)
         return buffer
 
-    values_buttons_comptage = radio_buttons_server("Comptage", ["Comptage"], requetes, req_calcul)
-    values_buttons_total = radio_buttons_server("Total", ["Total"], requetes, req_calcul)
-    values_buttons_moyenne = radio_buttons_server("Moyenne", ["Moyenne"], requetes, req_calcul)
-    values_buttons_ratio = radio_buttons_server("Ratio", ["Ratio"], requetes, req_calcul)
-    values_buttons_quantile = radio_buttons_server("Quantile", ["Quantile"], requetes, req_calcul)
+    values_buttons_comptage = radio_buttons_server("Comptage", requetes, req_calcul)
+    values_buttons_total = radio_buttons_server("Total", requetes, req_calcul)
+    values_buttons_moyenne = radio_buttons_server("Moyenne", requetes, req_calcul)
+    values_buttons_ratio = radio_buttons_server("Ratio", requetes, req_calcul)
+    values_buttons_quantile = radio_buttons_server("Quantile", requetes, req_calcul)
 
-    budget_req_server("Comptage", dataset, requetes, conception_query_count, conception_query_sum, conception_query_quantile, "Comptage")
-    budget_req_server("Total", dataset, requetes, conception_query_count, conception_query_sum, conception_query_quantile, "Total")
-    budget_req_server("Moyenne", dataset, requetes, conception_query_count, conception_query_sum, conception_query_quantile, "Moyenne")
-    budget_req_server("Ratio", dataset, requetes, conception_query_count, conception_query_sum, conception_query_quantile, "Ratio")
-    budget_req_server("Quantile", dataset, requetes, conception_query_count, conception_query_sum, conception_query_quantile, "Quantile")
+    budget_req_server(
+        "Comptage", dataset, requetes, conception_query_count,
+        conception_query_sum, conception_query_quantile
+    )
+    budget_req_server(
+        "Total", dataset, requetes, conception_query_count,
+        conception_query_sum, conception_query_quantile
+    )
+    budget_req_server(
+        "Moyenne", dataset, requetes, conception_query_count,
+        conception_query_sum, conception_query_quantile
+    )
+    budget_req_server(
+        "Ratio", dataset, requetes, conception_query_count,
+        conception_query_sum, conception_query_quantile
+    )
+    budget_req_server(
+        "Quantile", dataset, requetes, conception_query_count,
+        conception_query_sum, conception_query_quantile
+    )
 
-    @reactive.Calc
+    @reactive.calc
     def get_poids_req() -> dict[str, float]:
+        data_requetes = requetes()
         values_buttons = {
             **values_buttons_comptage(), **values_buttons_total(),
-            **values_buttons_moyenne(), **values_buttons_ratio(), **values_buttons_quantile()
+            **values_buttons_moyenne(), **values_buttons_ratio(),
+            **values_buttons_quantile()
         }
-        poids = get_weights(requetes(), values_buttons)
+        poids = get_weights(data_requetes, values_buttons)
         return poids
 
     @render.ui
-    def ligne_conditionnelle():
+    def ligne_conditionnelle() -> Optional[ui.TagList]:
         type_req = input.type_req()
         variables = variable_choices().copy()
         ui.update_selectize("group_by", choices=variables)
 
-        if type_req == "Comptage" or type_req == "":
+        if type_req == "Comptage":
             return None
 
-        contenu = []
-        # Supprime le groupe "Qualitatives"
-        del variables["🔤 Qualitatives"]
-
-        label_variable = "Variable au numérateur:" if type_req == "Ratio" else "Variable:"
-        contenu.append(ui.column(3, ui.input_selectize("variable", label_variable,
-                                                    choices=variables, options={"plugins": ["clear_button"]})))
-
-        if type_req == "Ratio":
-            contenu.append(ui.column(3, ui.input_selectize("variable_denominateur", "Variable au dénominateur:",
-                                                        choices=variables, options={"plugins": ["clear_button"]})))
-
-        if type_req == "Quantile":
-            contenu.append(ui.column(3, ui.input_selectize("alpha", "Choix des quantiles:", choices=choix_quantile, multiple=True)))
-            contenu.append(ui.column(3, ui.input_numeric("nb_candidats", "Nombre de candidats:", 1000, min=5, max=1_000_000, step=5)))
+        contenu = affichage_bouton(type_req, variables, choix_quantile)
 
         return ui.row(*contenu)
 

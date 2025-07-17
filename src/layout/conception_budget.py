@@ -43,12 +43,12 @@ def sidebar_budget():
     )
 
 
-def make_radio_buttons(request, filter_type: list[str], dict_results):
+def make_radio_buttons(request, filter_type: str, dict_results):
     radio_buttons = []
     priorite = {"Comptage": "2", "Total": "2", "Moyenne": "1", "Ratio": "1", "Quantile": "3"}
 
     for key, req in request.items():
-        if req["type"] in filter_type:
+        if req["type"] == filter_type:
             radio_buttons_id = key
 
             # Contenu du tableau en HTML

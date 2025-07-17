@@ -14,7 +14,7 @@ from itertools import combinations, product
 import itertools
 from functools import reduce
 import cvxpy as cp
-from typing import Optional
+from typing import Optional, Any
 
 # Map des opérateurs Python vers leurs fonctions correspondantes
 OPS = {
@@ -25,6 +25,26 @@ OPS = {
     ">": operator.gt,
     "<": operator.lt,
 }
+
+
+def optimisation_chaine(dict_query, modalite) :
+    filtres_uniques = set(v.get("filtre") for v in dict_query.values())
+    variables_uniques = set(v.get("variable") for v in dict_query.values())
+
+    requetes_finales = {}
+
+    for filtre in filtres_uniques:
+        for variable in variables_uniques:
+            query_filtre_variable = {
+                k: v for k, v in dict_query.items()
+                if v.get("variable") == variable and v.get("filtre") == filtre
+            }
+            query_filtre_variable_opt = optimization_boosted(
+                dict_query=query_filtre_variable, modalite=modalite
+            )
+            requetes_finales.update(query_filtre_variable_opt)
+
+    return requetes_finales
 
 
 def save_yaml_metadata_from_dataframe(lf: pl.DataFrame, dataset_name: str = "dataset") -> None:
@@ -673,7 +693,7 @@ def manual_quantile_score(data, candidats, alpha, et_si=False):
     return np.array(scores), max_alpha
 
 
-def get_weights(request: dict, dict_values) -> dict:
+def get_weights(request: dict[str, dict[str, Any]], dict_values: dict[str, str]) -> dict:
     # Étape 1 : récupération des poids bruts
     raw_weights = {
         key: radio_to_weight.get(float(dict_values[key]), 0)
@@ -702,11 +722,13 @@ def get_weights(request: dict, dict_values) -> dict:
     return weights
 
 
-def load_data(path: str, storage_options=None) -> pl.DataFrame:
+def load_data(path: str, storage_options=None) -> pl.LazyFrame:
     read_kwargs = {"storage_options": storage_options} if path.startswith("s3://") else {}
-    df = pl.read_parquet(path, **read_kwargs)
+    lf = pl.read_parquet(path, **read_kwargs).lazy()
 
-    return df.drop("geometry") if "geometry" in df.columns else df
+    # On vérifie les colonnes pour éviter d'inclure "geometry"
+    # Astuce : on supprime la colonne sans collecter en amont
+    return lf.drop("geometry") if "geometry" in lf.schema else lf
 
 
 def extract_column_names_from_choices(choices: dict) -> list[str]:
@@ -716,3 +738,45 @@ def extract_column_names_from_choices(choices: dict) -> list[str]:
         if isinstance(val, dict):  # sections comme "Qualitatives" ou "Quantitatives"
             columns.extend(val.values())
     return columns
+
+
+def extract_bounds(metadata: dict, var_name: str) -> list[float] | None:
+    if 'columns' not in metadata or var_name not in metadata['columns']:
+        return None
+    col_meta = metadata['columns'][var_name]
+    min_val = col_meta.get('min')
+    max_val = col_meta.get('max')
+    if min_val is not None and max_val is not None:
+        return [float(min_val), float(max_val)]
+    return None
+
+
+def same_base_request(a: dict, b: dict) -> bool:
+    return (
+        a.get("type") == b.get("type") and
+        a.get("variable") == b.get("variable") and
+        a.get("bounds") == b.get("bounds") and
+        a.get("by", []) == b.get("by", []) and
+        a.get("filtre") == b.get("filtre")
+    )
+
+
+def same_quantile_params(a: dict, b: dict) -> bool:
+    return (
+        a.get("alpha") == b.get("alpha") and
+        a.get("nb_candidats") == b.get("nb_candidats")
+    )
+
+
+def same_ratio_params(a: dict, b: dict) -> bool:
+    return (
+        a.get("variable_denominateur") == b.get("variable_denominateur") and
+        a.get("bounds_denominateur") == b.get("bounds_denominateur")
+    )
+
+
+def assert_or_notify(condition: bool, message: str) -> bool:
+    if not condition:
+        ui.notification_show(f"❌ {message}", type="error")
+        return False
+    return True

@@ -1,7 +1,6 @@
 from src.fonctions import (
     parse_filter_string
 )
-
 from abc import ABC, abstractmethod
 import polars as pl
 import numpy as np

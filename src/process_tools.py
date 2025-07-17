@@ -8,6 +8,7 @@ import pandas as pd
 from src.constant import (
     choix_quantile
 )
+from typing import Any
 
 
 def df_comptage(requetes, conception_query_count) -> pd.DataFrame:
@@ -24,7 +25,7 @@ def df_comptage(requetes, conception_query_count) -> pd.DataFrame:
                 results.append({
                     "requête": req,
                     "groupement": query["groupement_style"],
-                    "filtre": query["filtre"],
+                    "filtre": query.get("filtre"),
                     "écart type estimation": query["scale"],
                     "écart type bruit": np.sqrt(query["sigma2"])
                 })
@@ -91,7 +92,7 @@ def df_total(dataset, requetes, conception_query_count, conception_query_sum) ->
                     "label": label,
                     "variable": variable,
                     "groupement": query["groupement_style"],
-                    "filtre": query["filtre"],
+                    "filtre": query.get("filtre"),
                     "cv moyen (%)": cv_moyen,
                     "biais relatif moyen (%)": biais_relatif_moyen,
                     "écart type estimation": scale,
@@ -172,7 +173,7 @@ def df_moyenne(dataset, requetes, conception_query_count, conception_query_sum):
                     "label": label,
                     "variable": variable,
                     "groupement": query["groupement_style"],
-                    "filtre": query["filtre"],
+                    "filtre": query.get("filtre"),
                     "cv moyen (%)": cv_moyen,
                     "biais relatif moyen (%)": biais_relatif_moyen,
                     "écart type moyen estimation ": np.sqrt(var_moyenne),
@@ -274,7 +275,7 @@ def df_ratio(dataset, requetes, conception_query_count, conception_query_sum):
                     "variable numérateur": variable,
                     "variable dénominateur": variable_denom,
                     "groupement": query["groupement_style"],
-                    "filtre": query["filtre"],
+                    "filtre": query.get("filtre"),
                     "cv moyen (%)": cv_moyen,
                     "biais relatif moyen (%)": biais_relatif_moyen,
                     "écart type moyen estimation ": np.sqrt(var_moyenne),
@@ -343,24 +344,6 @@ async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dic
     results_store.set(current_results)
 
 
-def calcul_requete(requetes, dataset):
-    df = dataset.lazy()
-    dict_results = {}
-
-    for key, req in requetes.items():
-        # Colonne de gauche : paramètres
-        resultat = process_request(df, req, use_bounds=False)
-
-        if req.get("by") is not None:
-            resultat = resultat.sort(by=req.get("by"))
-
-        resultat = resultat.to_pandas()
-
-        dict_results[key] = resultat
-
-    return dict_results
-
-
 def process_request_dp(context_rho, context_eps, key_values, req):
     variable = req.get("variable")
     by = req.get("by")
@@ -389,7 +372,37 @@ def process_request_dp(context_rho, context_eps, key_values, req):
     return mapping[type_req]() # class_mapping[type_req](**req)
 
 
-def process_request(df: pl.LazyFrame, req: dict, use_bounds=True) -> pl.LazyFrame:
+def process_request(df: pl.LazyFrame, req: dict[str, Any], use_bounds: bool = True) -> pl.LazyFrame:
+    """
+    Produit le résultat de la requête (sans confidentialité différentielle) sous forme de lazyframe.
+
+    Args:
+        df (pl.LazyFrame): Données requêtées.
+        req (dict): Dictionnaire contenant les paramètres nécessaires à la requête.
+        use_bounds (bool): Booléen indiquant si le clipping doit être appliqué ou non.
+
+    Returns:
+        pl.LazyFrame: Résultat de la requête.
+    """
+
+    def apply_bounds(df: pl.LazyFrame, var: str, bounds: tuple[float, float]) -> pl.LazyFrame:
+        """
+        Applique les bornes à une variable si elles sont définies.
+
+        Args:
+            frame (pl.LazyFrame): Données requêtées.
+            var (str): Nom de la variable clippée.
+            bounds (tuple): Bornes min et max de l'intervalle du clipping.
+
+        Returns:
+            pl.LazyFrame: Données après clipping de la variable
+        """
+        if var and bounds:
+            lower, upper = bounds
+            return df.with_columns(pl.col(var).clip(lower_bound=lower, upper_bound=upper).alias(var))
+        return df
+
+    # Extraction des paramètres
     variable = req.get("variable")
     variable_denom = req.get("variable_denominateur")
     by = req.get("by")
@@ -402,43 +415,44 @@ def process_request(df: pl.LazyFrame, req: dict, use_bounds=True) -> pl.LazyFram
     if filtre:
         df = df.filter(parse_filter_string(filtre))
 
-    # Appliquer les bornes sur la variable principale
-    if use_bounds and variable and bounds:
-        L, U = bounds
-        df = df.with_columns(pl.col(variable).clip(lower_bound=L, upper_bound=U).alias(variable))
+    # Application des bornes
+    if use_bounds:
+        df = apply_bounds(df, variable, bounds)
+        df = apply_bounds(df, variable_denom, bounds_denom)
 
-    # Appliquer les bornes sur le dénominateur (si ratio)
-    if use_bounds and variable_denom and bounds_denom:
-        L, U = bounds_denom
-        df = df.with_columns(pl.col(variable_denom).clip(lower_bound=L, upper_bound=U).alias(variable_denom))
+    # Construction du corps de la requête
+    match type_req:
+        case "comptage":
+            agg_exprs = [pl.count().alias("count")]
 
-    # Fonctions de traitement
-    if type_req in {"count", "comptage"}:
-        agg_exprs = [pl.count().alias("count")]
+        case "moyenne":
+            agg_exprs = [
+                pl.col(variable).sum().alias("sum"),
+                pl.count().alias("count"),
+                pl.col(variable).mean().alias("mean")
+            ]
 
-    elif type_req in {"mean", "moyenne"}:
-        agg_exprs = [
-            pl.col(variable).sum().alias("sum"),
-            pl.count().alias("count"),
-            pl.col(variable).mean().alias("mean")
-        ]
+        case "total":
+            agg_exprs = [pl.col(variable).sum().alias("sum")]
 
-    elif type_req in {"sum", "total"}:
-        agg_exprs = [pl.col(variable).sum().alias("sum")]
+        case "ratio":
+            agg_exprs = [
+                pl.col(variable).sum().alias("sum_num"),
+                pl.col(variable_denom).sum().alias("sum_denom")
+            ]
 
-    elif type_req in {"ratio"}:
-        agg_exprs = [
-            pl.col(variable).sum().alias("sum_num"),
-            pl.col(variable_denom).sum().alias("sum_denom")
-        ]
+        case "quantile":
+            if not list_alpha:
+                raise ValueError("Liste des quantiles `alpha` manquante pour le type 'quantile'")
+            agg_exprs = [
+                pl.col(variable)
+                .quantile(float(alpha), interpolation="nearest")
+                .alias(f"quantile_{float(alpha)}")
+                for alpha in list_alpha
+            ]
 
-    elif type_req in {"quantile"}:
-        agg_exprs = [
-            pl.col(variable).quantile(float(alpha), interpolation="nearest").alias(f"quantile_{float(alpha)}") for alpha in list_alpha
-        ]
-
-    else:
-        raise ValueError(f"Type de requête inconnu : {req.get('type')}")
+        case _:
+            raise ValueError(f"Type de requête inconnu : {req.get('type')}")
 
     # Appliquer aggregation selon `by`
     if by:
