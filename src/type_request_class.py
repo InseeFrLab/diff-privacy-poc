@@ -9,31 +9,27 @@ import numpy as np
 
 
 def apply_bounds(df: pl.LazyFrame, var: str, bounds: tuple[float, float]) -> pl.LazyFrame:
-        """
-        Applique les bornes à une variable si elles sont définies.
+    """
+    Applique les bornes à une variable si elles sont définies.
 
-        Args:
-            frame (pl.LazyFrame): Données requêtées.
-            var (str): Nom de la variable clippée.
-            bounds (tuple): Bornes min et max de l'intervalle du clipping.
+    Args:
+        frame (pl.LazyFrame): Données requêtées.
+        var (str): Nom de la variable clippée.
+        bounds (tuple): Bornes min et max de l'intervalle du clipping.
 
-        Returns:
-            pl.LazyFrame: Données après clipping de la variable
-        """
-        if var and bounds:
-            lower, upper = bounds
-            return df.with_columns(pl.col(var).clip(lower_bound=lower, upper_bound=upper).alias(var))
-        return df
+    Returns:
+        pl.LazyFrame: Données après clipping de la variable
+    """
+    if var and bounds:
+        lower, upper = bounds
+        return df.with_columns(pl.col(var).clip(lower_bound=lower, upper_bound=upper).alias(var))
+    return df
 
 
 def generate_public_keys(by_keys: list[str], key_values) -> pl.LazyFrame:
     # Ne garder que les colonnes utiles pour le group_by
     values = [key_values[key] for key in by_keys if key in key_values]
-
-    # Produit cartésien des valeurs
-    combinaisons = list(product(*values))
-
-    # Construction du LazyFrame public
+    combinaisons = list(product(*values))  # Produit cartésien des valeurs
     public_keys = pl.DataFrame([dict(zip(by_keys, comb)) for comb in combinaisons]).lazy()
     return public_keys
 
@@ -42,6 +38,10 @@ class Requete(ABC):
     def __init__(self, by=None, filtre=None):
         self.by = by
         self.filtre = filtre
+
+    @abstractmethod
+    def execute(self, df: pl.DataFrame) -> pl.DataFrame:
+        pass
 
     @abstractmethod
     def plan_dp(self, context, key_values):
@@ -53,32 +53,43 @@ class Requete(ABC):
     def execute_dp(self, context, key_values):
         return self.plan_dp(context, key_values).release().collect()
 
-    @abstractmethod
-    def execute(self, df: pl.DataFrame) -> pl.DataFrame:
-        pass
-
-    def generate_public_keys(self, by_keys, key_values: dict):
-        """Méthode utilitaire à partager : crée les clés publiques"""
-        df_keys = {
-            key: key_values.get(key, [])
-            for key in by_keys
-            if key in key_values
+    def to_query_dict(self) -> dict[str, Any]:
+        return {
+            "type": self.__class__.__name__,
+            **{k: v for k, v in self.__dict__.items() if v is not None}
         }
-        return pl.DataFrame(df_keys)
 
-    def filtre_bounds_by(self, df, expr, use_bounds, key_values=None):
+    def __repr__(self):
+        cls_name = self.__class__.__name__
+        args = [
+            f"{key}={value!r}"
+            for key, value in self.__dict__.items()
+            if value is not None
+        ]
+        return f"{cls_name}({', '.join(args)})"
+
+    def __eq__(self, other):
+        if not isinstance(other, self.__class__):
+            return False
+        return self.__dict__ == other.__dict__
+
+    def filtre_bounds_by(self, df, *expr, use_bounds, key_values=None):
         if self.filtre:
             df = df.filter(parse_filter_string(self.filtre))
 
         if use_bounds:
             df = apply_bounds(df, self.variable, self.bounds)
+            df = apply_bounds(df, self.variable_denominateur, self.bounds_denominateur)
 
         if self.by:
-            df = df.group_by(self.by).agg(expr)
+            df = df.group_by(self.by).agg(*expr)
             if key_values:
-                df = df.join(generate_public_keys(by_keys=self.by, key_values=key_values), on=self.by, how="right")
+                df = df.join(
+                    generate_public_keys(by_keys=self.by, key_values=key_values),
+                    on=self.by, how="right"
+                )
         else:
-            df = df.select(expr)
+            df = df.select(*expr)
 
         return df
 
@@ -93,29 +104,15 @@ class Comptage(Requete):
             .dp.sum((0, 1))
             .alias("count")
         )
-
-        query = self.filtre_bounds_by(self, query, expr, use_bounds=False, key_values=key_values)
-
+        query = self.filtre_bounds_by(query, expr, use_bounds=False, key_values=key_values)
         return query
 
     def execute(self, df):
         expr = (
             pl.count().alias("count")
         )
-
         df = self.filtre_bounds_by(df, expr, use_bounds=False)
-
         return df.collect()
-
-    def to_query_dict(self) -> dict[str, Any]:
-        query = {
-            "type": "Comptage"
-        }
-        if self.by is not None:
-            query["by"] = self.by
-        if self.filtre is not None:
-            query["filtre"] = self.filtre
-        return query
 
 
 class Total(Requete):
@@ -147,17 +144,7 @@ class Total(Requete):
                 .alias("sum")
             )
 
-        if self.filtre is not None:
-            query = query.filter(parse_filter_string(self.filtre))
-
-        if self.by is not None:
-            query = (
-                query.group_by(self.by)
-                .agg(expr)
-                .join(self.generate_public_keys(by_keys=self.by, key_values=key_values), on=self.by, how="right")
-            )
-        else:
-            query = query.select(expr)
+        query = self.filtre_bounds_by(query, expr, use_bounds=False, key_values=key_values)
         return query
 
     def execute_dp(self, context, key_values, centre: bool = True):
@@ -168,22 +155,8 @@ class Total(Requete):
             pl.col(self.variable).sum().alias("sum"),
             pl.count().alias("count")
         )
-
-        df = self.filtre_bounds_and_by(self, df, expr, use_bounds)
-
+        df = self.filtre_bounds_by(df, expr, use_bounds)
         return df.collect()
-
-    def to_query_dict(self) -> dict[str, Any]:
-        query = {
-            "type": "Total",
-            "variable": self.variable,
-            "bounds": self.bounds
-        }
-        if self.by is not None:
-            query["by"] = self.by
-        if self.filtre is not None:
-            query["filtre"] = self.filtre
-        return query
 
 
 class Moyenne(Requete):
@@ -210,24 +183,11 @@ class Moyenne(Requete):
             .dp.sum(bounds=(1, 1))
             .alias("count")
         )
-
-        if self.filtre is not None:
-            query = query.filter(parse_filter_string(self.filtre))
-
-        if self.by is not None:
-            query = (
-                query.group_by(self.by)
-                .agg(expr)
-                .join(self.generate_public_keys(by_keys=self.by, key_values=key_values), on=self.by, how="right")
-            )
-        else:
-            query = query.select(expr)
-
+        query = self.filtre_bounds_by(query, expr, use_bounds=False, key_values=key_values)
         # Calcul de la moyenne centrée bruitée, puis recentrage
         query = query.with_columns(
             ((pl.col("centered_sum") / pl.col("count")) + center).alias("mean")
         )
-
         return query
 
     def execute(self, df, use_bounds):
@@ -236,30 +196,52 @@ class Moyenne(Requete):
             pl.count().alias("count"),
             pl.col(self.variable).mean().alias("mean")
         )
-
-        df = self.filtre_bounds_and_by(df, expr, use_bounds)
-
+        df = self.filtre_bounds_by(df, expr, use_bounds)
         return df.collect()
 
 
 class Ratio(Requete):
-    def __init__(self, variable_numerateur, variable_denominateur, bounds, by=None, filtre=None):
+    def __init__(
+        self, variable_numerateur, variable_denominateur, bounds_numerateur,
+        bounds_denominateur, by=None, filtre=None
+    ):
         super().__init__(by=by, filtre=filtre)
-        self.variable_numerateur = variable_numerateur
+        self.variable = variable_numerateur
+        self.bounds = bounds_numerateur
         self.variable_denominateur = variable_denominateur
-        self.bounds = bounds
+        self.bounds_denominateur = bounds_denominateur
 
     def plan_dp(self, context, key_values):
-        pass
+        l_num, u_num = self.bounds
+        l_denom, u_denom = self.bounds_denominateur
+        query = context.query()
+        expr = (
+            pl.col(self.variable)
+            .fill_null(0)
+            .fill_nan(0)
+            .dp.sum(bounds=(l_num, u_num))
+            .alias("sum_numerateur"),
+
+            pl.col(self.variable_denominateur)
+            .fill_null(0)
+            .fill_nan(0)
+            .dp.sum(bounds=(l_denom, u_denom))
+            .alias("sum_denominateur")
+        )
+        query = self.filtre_bounds_by(query, expr, use_bounds=False, key_values=key_values)
+        # Calcul de la moyenne centrée bruitée, puis recentrage
+        query = query.with_columns(
+            (pl.col("sum_numerateur") / pl.col("sum_denominateur")).alias("ratio")
+        )
+        return query
 
     def execute(self, df, use_bounds):
         expr = (
             pl.col(self.variable_numerateur).sum().alias("sum_num"),
             pl.col(self.variable_denominateur).sum().alias("sum_denom")
         )
-
-        df = self.filtre_bounds_and_by(df, expr, use_bounds)
-
+        df = self.filtre_bounds_by(df, expr, use_bounds)
+        df = df.with_columns((pl.col("sum_num") / pl.col("sum_denom")).alias("ratio"))
         return df.collect()
 
 
@@ -268,36 +250,24 @@ class Quantile(Requete):
         super().__init__(by=by, filtre=filtre)
         self.variable = variable
         self.bounds = bounds
-        bounds_min, bounds_max = bounds
-        self.candidats = np.linspace(bounds_min, bounds_max, int(nb_candidats))
-
         if isinstance(alpha, list):
-            self.list_alpha = alpha
+            self.alpha = alpha
         else:
-            self.list_alpha = [alpha]
+            self.alpha = [alpha]
+        self.nb_candidats = nb_candidats
 
     def plan_dp(self, context, key_values):
+        bounds_min, bounds_max = self.bounds
+        candidats = np.linspace(bounds_min, bounds_max, int(self.nb_candidats))
         query = context.query()
-        expr = [
+        exprs = [
             pl.col(self.variable)
             .fill_null(0)
-            .dp.quantile(float(a), self.candidats)
+            .dp.quantile(float(a), candidats)
             .alias(f"quantile_{float(a)}")
-            for a in self.list_alpha
+            for a in self.alpha
         ]
-
-        if self.filtre is not None:
-            query = query.filter(parse_filter_string(self.filtre))
-
-        if self.by is not None:
-            query = (
-                query.group_by(self.by)
-                .agg(*expr)
-                .join(self.generate_public_keys(by_keys=self.by, key_values=key_values), on=self.by, how="right")
-            )
-        else:
-            query = query.select(*expr)
-
+        query = self.filtre_bounds_by(query, *exprs, use_bounds=False, key_values=key_values)
         return query
 
     def execute(self, df, use_bounds):
@@ -307,7 +277,5 @@ class Quantile(Requete):
             .alias(f"quantile_{float(alpha)}")
             for alpha in self.list_alpha
         )
-
-        df = self.filtre_bounds_and_by(self, df, expr, use_bounds)
-
+        df = self.filtre_bounds_by(df, expr, use_bounds)
         return df.collect()
