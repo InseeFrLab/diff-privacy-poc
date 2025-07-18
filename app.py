@@ -227,7 +227,6 @@ def server(input: Inputs, output: Outputs, session: Session):
         "Quantile", requetes, header="Répartition du budget pour les quantiles", type_req="Quantile"
     )
 
-    # To DO
     @reactive.calc
     def dict_query() -> dict[str, dict[str, Any]]:
         data_requetes = requetes()
@@ -830,7 +829,6 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         return affichage_requete(requetes_affichees, req_calcul())
 
-    # TO DO
     @render.ui
     def interval_summary() -> ui.Tag:
         sigma = input.scale_gauss()

@@ -3,10 +3,11 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.graph_objects as go
+from typing import Union
 sns.set_theme(style="whitegrid")
 
 
-def get_custom_color(val_color):
+def get_custom_color(val_color: Union[str, tuple]):
     if val_color == "Aucun":
         return "darkgreen"
     if isinstance(val_color, str):

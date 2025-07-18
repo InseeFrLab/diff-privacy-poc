@@ -14,7 +14,8 @@ from itertools import combinations, product
 import itertools
 from functools import reduce
 import cvxpy as cp
-from typing import Optional, Any
+from shiny import ui
+from typing import Optional, Any, Sequence, Union
 
 # Map des opérateurs Python vers leurs fonctions correspondantes
 OPS = {
@@ -27,7 +28,10 @@ OPS = {
 }
 
 
-def optimisation_chaine(dict_query, modalite) :
+def optimisation_chaine(
+    dict_query: dict[str, dict[str, Any]], modalite
+) -> dict[str, dict[str, Any]]:
+
     filtres_uniques = set(v.get("filtre") for v in dict_query.values())
     variables_uniques = set(v.get("variable") for v in dict_query.values())
 
@@ -547,7 +551,10 @@ def optimization_boosted(modalite, dict_query):
     return dict_query
 
 
-def update_context(CONTEXT_PARAM, budget, requete):
+def update_context(
+    CONTEXT_PARAM: dict[str, Any], budget: float, requete: dict[str, dict[str, Any]]
+) -> tuple[Union[dp.Context, None], Union[dp.Context, None]]:
+
     # Séparer les poids selon le type de requête
     poids_rho = [req["poids"] for req in requete.values() if req["type"].lower() != "quantile"]
     poids_eps = [req["poids"] for req in requete.values() if req["type"].lower() == "quantile"]
@@ -558,7 +565,10 @@ def update_context(CONTEXT_PARAM, budget, requete):
     budget_rho = budget * somme_rho
     budget_eps = np.sqrt(8 * budget * somme_eps)
 
-    def create_context(budget_val, poids, is_rho):
+    def create_context(
+        budget_val: float, poids: list[float], is_rho: bool
+    ) -> Union[dp.Context, None]:
+
         if budget_val == 0:
             return None
         return dp.Context.compositor(
@@ -573,7 +583,7 @@ def update_context(CONTEXT_PARAM, budget, requete):
     return context_rho, context_eps
 
 
-def rho_from_eps_delta(epsilon, delta):
+def rho_from_eps_delta(epsilon: float, delta: float) -> float:
     if not (0 < delta < 1):
         raise ValueError("delta must be in (0, 1)")
     if epsilon <= 0:
@@ -585,11 +595,11 @@ def rho_from_eps_delta(epsilon, delta):
     return rho
 
 
-def eps_from_rho_delta(rho, delta):
+def eps_from_rho_delta(rho: float, delta: float) -> float:
     if rho <= 0 or delta <= 0 or delta >= 1:
         raise ValueError("rho must be positive and delta in (0, 1)")
 
-    def equation(y, rho, delta):
+    def equation(y: float, rho: float, delta: float):
         denom = delta * (1 + (y - rho) / (2 * rho))
         if denom <= 0:
             return np.inf  # force fsolve à éviter cette zone
@@ -640,7 +650,7 @@ def parse_filter_string(filter_str: str, columns: Optional[list[str]] = None) ->
             ops.append("&")
         elif token == "|":
             ops.append("|")
-        elif token:  # une condition
+        elif token:
             # Avant d'appeler parse_single_condition, on vérifie le nom de la colonne
             for op_str in OPS:
                 if op_str in token:
@@ -664,22 +674,30 @@ def parse_filter_string(filter_str: str, columns: Optional[list[str]] = None) ->
     return expr
 
 
-def manual_quantile_score(data, candidats, alpha, et_si=False):
-    def get_fractional_alpha(alpha_val):
+def manual_quantile_score(
+    data: Sequence[float], candidats: Sequence[float], alpha: float, et_si: bool = False
+) -> tuple[np.ndarray, int]:
+    """
+    Calcule une mesure de "distance quantile" pour une liste de candidats
+    par rapport au quantile alpha d'une distribution donnée.
+    """
+
+    def get_fractional_alpha(alpha: float, et_si: bool) -> tuple[int, int]:
         known_alphas = {0: (0, 1), 0.25: (1, 4), 0.5: (1, 2), 0.75: (3, 4), 1: (1, 1)}
-        return known_alphas.get(alpha_val, (int(np.floor(alpha_val * 10_000)), 10_000))
+        if et_si or alpha not in known_alphas:
+            return int(np.floor(alpha * 10_000)), 10_000
+        return known_alphas[alpha]
 
-    alpha_num, alpha_denum = get_fractional_alpha(alpha)
-    if et_si:
-        alpha_num, alpha_denum = int(np.floor(alpha * 10_000)), 10_000
-
+    alpha_num, alpha_denum = get_fractional_alpha(alpha, et_si)
+    max_alpha = max(alpha_num, alpha_denum - alpha_num)
     data_len = len(data)
+
     if data_len == 0:
-        return np.array([]), max(alpha_num, alpha_denum - alpha_num)
+        return np.array([]), max_alpha
 
     sorted_data = np.sort(data)
-
     scores = []
+
     for c in candidats:
         # nombre d'éléments < c : recherche d'indice d'insertion à gauche
         n_less = np.searchsorted(sorted_data, c, side='left')
@@ -689,7 +707,6 @@ def manual_quantile_score(data, candidats, alpha, et_si=False):
         score = alpha_denum * n_less - alpha_num * (data_len - n_equal)
         scores.append(abs(score))
 
-    max_alpha = max(alpha_num, alpha_denum - alpha_num)
     return np.array(scores), max_alpha
 
 
@@ -722,17 +739,14 @@ def get_weights(request: dict[str, dict[str, Any]], dict_values: dict[str, str])
     return weights
 
 
-def load_data(path: str, storage_options=None) -> pl.LazyFrame:
+def load_data(path: str, storage_options: Optional[dict[str, str]] = None) -> pl.LazyFrame:
     read_kwargs = {"storage_options": storage_options} if path.startswith("s3://") else {}
     lf = pl.read_parquet(path, **read_kwargs).lazy()
-
-    # On vérifie les colonnes pour éviter d'inclure "geometry"
-    # Astuce : on supprime la colonne sans collecter en amont
     return lf.drop("geometry") if "geometry" in lf.schema else lf
 
 
 def extract_column_names_from_choices(choices: dict) -> list[str]:
-    """À partir du dict retourné par `variable_choices`, extrait la liste plate des noms de colonnes."""
+    """À partir du dict retourné par `variable_choices`, extrait la liste des noms de colonnes."""
     columns = []
     for key, val in choices.items():
         if isinstance(val, dict):  # sections comme "Qualitatives" ou "Quantitatives"
