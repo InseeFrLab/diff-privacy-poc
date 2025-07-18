@@ -395,6 +395,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     def conception_query_count() -> dict[str, dict[str, Any]]:
         data_query = dict_query()
         query_comptage = {k: v for k, v in data_query.items()if v["type"].lower() == "comptage"}
+        print(optimisation_chaine(query_comptage, key_values()))
         return optimisation_chaine(query_comptage, key_values())
 
     @reactive.calc
@@ -1226,16 +1227,36 @@ def server(input: Inputs, output: Outputs, session: Session):
         poids = get_weights(data_requetes, values_buttons)
         return poids
 
+    # Mémoire interne pour ne pas déclencher update inutilement
+    _last_choices = {"group_by": None}
+
+    @reactive.effect
+    def _update_group_by_select():
+        current_choices = variable_choices().copy()
+        previous_choices = _last_choices["group_by"]
+
+        # Ne mettre à jour que si les choix ont changé
+        if current_choices != previous_choices:
+            ui.update_selectize("group_by", choices=current_choices, selected=input.group_by())
+            _last_choices["group_by"] = current_choices
+
     @render.ui
     def ligne_conditionnelle() -> Optional[ui.TagList]:
         type_req = input.type_req()
         variables = variable_choices().copy()
-        ui.update_selectize("group_by", choices=variables)
 
         if type_req == "Comptage":
             return None
 
-        contenu = affichage_bouton(type_req, variables, choix_quantile)
+        with reactive.isolate():
+            try:
+                variable_selected = input.variable()
+            except Exception:
+                variable_selected = None
+
+        contenu = affichage_bouton(
+            type_req, variables, choix_quantile,
+            selected_variable=variable_selected)
 
         return ui.row(*contenu)
 

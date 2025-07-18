@@ -6,6 +6,7 @@ from itertools import product
 from typing import Any
 from abc import ABC, abstractmethod
 import numpy as np
+from typing import Optional, Any, Sequence, Union
 
 
 def apply_bounds(df: pl.LazyFrame, var: str, bounds: tuple[float, float]) -> pl.LazyFrame:
@@ -35,7 +36,7 @@ def generate_public_keys(by_keys: list[str], key_values) -> pl.LazyFrame:
 
 
 class Requete(ABC):
-    def __init__(self, by=None, filtre=None):
+    def __init__(self, by: Optional[list[str]] = None, filtre: Optional[str] = None):
         self.by = by
         self.filtre = filtre
 

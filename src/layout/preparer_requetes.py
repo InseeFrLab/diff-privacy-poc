@@ -155,7 +155,7 @@ def affichage_requete(requetes, dict_stockage):
     return ui.accordion(*panels, open=True)
 
 
-def affichage_bouton(type_req: str, variables: dict, choix_quantile: dict):
+def affichage_bouton(type_req: str, variables: dict, choix_quantile: dict, selected_variable: str):
 
     contenu = []
     variables.pop("🔤 Qualitatives", None)
@@ -165,7 +165,8 @@ def affichage_bouton(type_req: str, variables: dict, choix_quantile: dict):
         3,
         ui.input_selectize(
             "variable", label_variable,
-            choices=variables, options={"plugins": ["clear_button"]})
+            choices=variables, options={"plugins": ["clear_button"]},
+            selected=selected_variable)
         )
     )
 
