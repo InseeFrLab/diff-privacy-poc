@@ -13,7 +13,7 @@ from src.layout.conception_budget import page_conception_budget, make_radio_butt
 from src.layout.resultat_dp import page_resultat_dp, afficher_resultats
 from src.layout.etat_budget_dataset import page_etat_budget_dataset
 from src.process_tools import (
-    process_request, calculer_toutes_les_requetes,
+    calculer_toutes_les_requetes,
     df_comptage, df_total, df_moyenne, df_ratio, df_quantile
 )
 from src.fonctions import (
@@ -113,7 +113,7 @@ def radio_buttons_server(
 
     def selected_values() -> dict[str, str]:
         data_requetes = requetes()
-        req_type = {k: v for k, v in data_requetes.items() if v["type"] == type_req}
+        req_type = {k: v for k, v in data_requetes.items() if v.__class__.__name__ == type_req}
         if not req_type:
             return {}
         return {key: input[key]() for key in req_type.keys()}
@@ -189,11 +189,12 @@ def budget_req_server(
 @module.server
 def bloc_budget_server(
     input: Inputs, output: Outputs, session: Session,
-    requetes: reactive.Value[dict[str, dict[str, Any]]], header: str, type_req: str
+    requetes: reactive.Value[dict[str, dict[str, Any]]], header: str
 ):
+    type_req = session.ns
 
     def bloc_visible() -> bool:
-        return any(req["type"] == type_req for req in requetes().values())
+        return any(req.__class__.__name__ == type_req for req in requetes().values())
 
     @output
     @render.ui
@@ -220,221 +221,76 @@ def server(input: Inputs, output: Outputs, session: Session):
     onglet_actuel: reactive.Value[str] = reactive.Value("Conception du budget")  # Onglet par défaut
     trigger_update_budget: reactive.Value[int] = reactive.Value(0)
 
-    bloc_budget_server(
-        "Comptage", requetes, header="Répartition du budget pour les comptages", type_req="Comptage"
-    )
-    bloc_budget_server(
-        "Total", requetes, header="Répartition du budget pour les totaux", type_req="Total"
-    )
-    bloc_budget_server(
-        "Moyenne", requetes, header="Répartition du budget pour les moyennes", type_req="Moyenne"
-    )
-    bloc_budget_server(
-        "Ratio", requetes, header="Répartition du budget pour les ratios", type_req="Ratio"
-    )
-    bloc_budget_server(
-        "Quantile", requetes, header="Répartition du budget pour les quantiles", type_req="Quantile"
-    )
+    bloc_budget_server("Comptage", requetes, header="Répartition du budget pour les comptages")
+    bloc_budget_server("Total", requetes, header="Répartition du budget pour les totaux")
+    bloc_budget_server("Moyenne", requetes, header="Répartition du budget pour les moyennes")
+    bloc_budget_server("Ratio", requetes, header="Répartition du budget pour les ratios")
+    bloc_budget_server("Quantile", requetes, header="Répartition du budget pour les quantiles")
 
     @reactive.calc
     def dict_query() -> dict[str, dict[str, Any]]:
-        data_requetes = requetes()
-        req_comptage_quantile = {
-            k: v for k, v in data_requetes.items() if v["type"].lower() in ["comptage", "quantile"]}
-        req_total_moyenne = {
-            k: v for k, v in data_requetes.items() if v["type"].lower() in ["moyenne", "total"]}
-        req_ratio = {
-            k: v for k, v in data_requetes.items() if v["type"].lower() in ["ratio"]}
+        import copy
+        data_requetes = {k: copy.deepcopy(v) for k, v in requetes().items()}  # ✅ copies indépendantes
         query = {}
         i = 1
 
-        for (key, request) in req_comptage_quantile.items():
-            query_request = request.copy()
-            query_request["req"] = [key]
-            cle = f"query_{i}"
-            query[cle] = query_request
-            i += 1
-
-        for (key, request) in req_total_moyenne.items():
-            query_request = request.copy()
-            # Cas 1 : Total
-            query_request["type"] = "Total"
-
-            # Chercher s'il existe une requête identique dans query, en ignorant "req"
-            found = False
-            for k, v in query.items():
-                v_without_req = {kk: vv for kk, vv in v.items() if kk != "req"}
-                if v_without_req == query_request:
-                    query[k]["req"].append(key)
-                    found = True
-                    break
-
-            # Si aucune requête équivalente n'a été trouvée, on ajoute une nouvelle entrée
-            if not found:
-                query_request["req"] = [key]
-                cle = f"query_{i}"
-                query[cle] = query_request
-                i += 1
-
-            # Cas 2 : Comptage
-            query_request = request.copy()
-            query_request["type"] = "Comptage"
-            query_request.pop("variable", None)
-            query_request.pop("bounds", None)
-
-            # Chercher s'il existe une requête identique dans query, en ignorant "req"
-            found = False
-            for k, v in query.items():
-                v_without_req = {kk: vv for kk, vv in v.items() if kk != "req"}
-                if v_without_req == query_request:
-                    query[k]["req"].append(key)
-                    found = True
-                    break
-
-            # Si aucune requête équivalente n'a été trouvée, on ajoute une nouvelle entrée
-            if not found:
-                query_request["req"] = [key]
-                cle = f"query_{i}"
-                query[cle] = query_request
-                i += 1
-
-        for (key, request) in req_ratio.items():
-            query_request = request.copy()
-            # Cas 1 : Total variable 1
-            query_request["type"] = "Total"
-            query_request.pop("variable_denominateur", None)
-            query_request.pop("bounds_denominateur", None)
-
-            # Chercher s'il existe une requête identique dans query, en ignorant "req"
-            found = False
-            for k, v in query.items():
-                v_without_req = {kk: vv for kk, vv in v.items() if kk != "req"}
-                if v_without_req == query_request:
-                    query[k]["req"].append(key)
-                    found = True
-                    break
-
-            # Si aucune requête équivalente n'a été trouvée, on ajoute une nouvelle entrée
-            if not found:
-                query_request["req"] = [key]
-                cle = f"query_{i}"
-                query[cle] = query_request
-                i += 1
-
-            # Cas 2 : Total variable 2
-            query_request = request.copy()
-            query_request["type"] = "Total"
-            query_request["variable"] = query_request.pop("variable_denominateur", None)
-            query_request["bounds"] = query_request.pop("bounds_denominateur", None)
-
-            # Chercher s'il existe une requête identique dans query, en ignorant "req"
-            found = False
-            for k, v in query.items():
-                v_without_req = {kk: vv for kk, vv in v.items() if kk != "req"}
-                if v_without_req == query_request:
-                    query[k]["req"].append(key)
-                    found = True
-                    break
-
-            # Si aucune requête équivalente n'a été trouvée, on ajoute une nouvelle entrée
-            if not found:
-                query_request["req"] = [key]
-                cle = f"query_{i}"
-                query[cle] = query_request
-                i += 1
-
-            # Cas 3 : Comptage
-            query_request = request.copy()
-            query_request["type"] = "Comptage"
-            query_request.pop("variable", None)
-            query_request.pop("bounds", None)
-            query_request.pop("variable_denominateur", None)
-            query_request.pop("bounds_denominateur", None)
-
-            # Chercher s'il existe une requête identique dans query, en ignorant "req"
-            found = False
-            for k, v in query.items():
-                v_without_req = {kk: vv for kk, vv in v.items() if kk != "req"}
-                if v_without_req == query_request:
-                    query[k]["req"].append(key)
-                    found = True
-                    break
-
-            # Si aucune requête équivalente n'a été trouvée, on ajoute une nouvelle entrée
-            if not found:
-                query_request["req"] = [key]
-                cle = f"query_{i}"
-                query[cle] = query_request
-                i += 1
-
-        # Première passe : création des entrées avec poids brut
-        for params in query.values():
-            if 'by' not in params:
-                groupement = frozenset()
-                groupement_style = 'Aucun'
+        for (key, request) in data_requetes.items():
+            if request.__class__.__name__ not in ["Comptage", "Quantile"]:
+                tuple_request = request.transformation()
             else:
-                by = params['by']
-                if isinstance(by, str):
-                    groupement = frozenset([by])
-                    groupement_style = by
-                elif isinstance(by, list):
-                    groupement = frozenset(by)
-                    groupement_style = by[0] if len(by) == 1 else tuple(by)
+                tuple_request = (request,)
 
-            params["groupement"] = groupement
-            params["groupement_style"] = groupement_style
+            for sous_req in tuple_request:
+                if sous_req not in query.values():
+                    sous_req.id_req.append(key)
+                    cle = f"query_{i}"
+                    query[cle] = sous_req
+                    i += 1
 
-            # Récupération des noms de requêtes associés
-            reqs = params.get('req', [])
+                else:
+                    # 🔎 Trouver la clé correspondant à la requête identique
+                    id_cle = next(k for k, v in query.items() if v == sous_req)
+                    query[id_cle].id_req.append(key)
 
-            # Calcul du poids total
-            poids_total = sum(get_poids_req().get(r, 0) for r in reqs)
+        for request in query.values():
+            request.poids = sum(get_poids_req().get(r, 0) for r in request.id_req)
 
-            params["poids"] = poids_total
-
-            if params["type"] == "Comptage":
-                params["sigma2"] = 1/(2 * input.budget_total() * params["poids"])
-
-            if params["type"] == "Total":
-                L, U = params["bounds"]
-                params["sigma2"] = (U - L)**2/(4 * 2 * input.budget_total() * params["poids"])
+        print(query)
         return query
 
     @reactive.calc
     def conception_query_count() -> dict[str, dict[str, Any]]:
         data_query = dict_query()
-        query_comptage = {k: v for k, v in data_query.items()if v["type"].lower() == "comptage"}
-        print(optimisation_chaine(query_comptage, key_values()))
-        return optimisation_chaine(query_comptage, key_values())
+        query_comptage = {k: v for k, v in data_query.items() if v.__class__.__name__ == "Comptage"}
+        return optimisation_chaine(query_comptage, key_values(), input.budget_total())
 
     @reactive.calc
     def conception_query_sum() -> dict[str, dict[str, Any]]:
         data_query = dict_query()
-        query_total = {k: v for k, v in data_query.items() if v["type"].lower() == "total"}
-        return optimisation_chaine(query_total, key_values())
+        query_total = {k: v for k, v in data_query.items() if v.__class__.__name__ == "Total"}
+        return optimisation_chaine(query_total, key_values(), input.budget_total())
 
     @reactive.calc
     def conception_query_quantile() -> dict[str, dict[str, Any]]:
         data_query = dict_query()
-        query_quantile = {k: v for k, v in data_query.items() if v["type"].lower() == "quantile"}
-        filtres_uniques = set(v.get("filtre") for v in query_quantile.values())
-        variables_uniques = set(v.get("variable") for v in query_quantile.values())
+        query_quantile = {k: v for k, v in data_query.items() if v.__class__.__name__ == "Quantile"}
+        filtres_uniques = set(query.filtre for query in query_quantile.values())
+        variables_uniques = set(query.variable for query in query_quantile.values())
 
         for filtre in filtres_uniques:
             for variable in variables_uniques:
                 query_filtre_variable = {
                     k: v for k, v in query_quantile.items()
-                    if v.get("variable") == variable and v.get("filtre") == filtre
+                    if v.variable == variable and v.filtre == filtre
                 }
 
                 for key_query, query in query_filtre_variable.items():
 
-                    budget_req_quantile = input.budget_total() * query.get("poids", 0)
-                    epsilon = np.sqrt(8 * budget_req_quantile)
+                    epsilon = np.sqrt(8 * input.budget_total() * query.poids)
 
-                    vrai_tableau = process_request(dataset(), query, use_bounds=False)
+                    vrai_tableau = query.execute(dataset(), use_bounds=False)
                     ic = intervalle_confiance_quantile(dataset(), query, epsilon, vrai_tableau)
-                    query_quantile[key_query]["scale"] = ic
+                    query_quantile[key_query].scale = ic
 
         return query_quantile
 
@@ -448,12 +304,20 @@ def server(input: Inputs, output: Outputs, session: Session):
         keys = key_values()
 
         # Extraire toutes les colonnes mentionnées dans les requêtes
-        vars_by = {val for req in data_query.values() for val in req.get("by", [])}
+        vars_by = {val for request in data_query.values() if request.by for val in request.by}
         vars_variable = {
-            v for v in (req.get("variable") for req in data_query.values())
+            v for v in (getattr(req, "variable", None) for req in data_query.values())
             if v is not None
         }
-        selected_columns = set(vars_by | vars_variable)  # union des deux ensembles
+        vars_variable_num = {
+            v for v in (getattr(req, "variable_numerateur", None) for req in data_query.values())
+            if v is not None
+        }
+        vars_variable_denom = {
+            v for v in (getattr(req, "variable_denominateur", None) for req in data_query.values())
+            if v is not None
+        }
+        selected_columns = set(vars_by | vars_variable | vars_variable_num | vars_variable_denom)  # union des deux ensembles
 
         # Sous-échantillon propre du LazyFrame
         if not selected_columns:
@@ -579,7 +443,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         """
         df = dataset().collect()
         data_query = dict_query()
-        variables = {val for v in data_query.values() for val in v.get("by", [])}
+        variables = {val for request in data_query.values() if request.by for val in request.by}
 
         # Extraire les modalités uniques, triées, sans NaN
         return {
@@ -636,7 +500,6 @@ def server(input: Inputs, output: Outputs, session: Session):
                     ui.notification_show(f"❌ Erreur dans la requête {name} : {e}", type="error")
 
             requetes.set(requetes_instances)
-            print(requetes())
             ui.update_selectize("delete_req", choices=["TOUTES"] + list(requetes_instances.keys()))
             ui.notification_show("✅ Requêtes importées avec succès", type="message")
 
@@ -652,7 +515,14 @@ def server(input: Inputs, output: Outputs, session: Session):
         Exporte les requêtes courantes au format JSON, encodé en UTF-8 avec indentation.
         """
         buffer = io.StringIO()
-        json.dump(requetes(), buffer, indent=2, ensure_ascii=False)
+
+        # On convertit chaque objet en dict sérialisable
+        serializable_requetes = {
+            k: v.to_query_dict()
+            for k, v in requetes().items()
+        }
+
+        json.dump(serializable_requetes, buffer, indent=2, ensure_ascii=False)
         buffer.seek(0)
         return buffer
 
@@ -742,31 +612,39 @@ def server(input: Inputs, output: Outputs, session: Session):
                 "bounds_denominateur": bounds_denom
             })
 
+        # Supprimer "type" du dictionnaire (inutilisable pour les classes)
         clean_dict = {
             k: v for k, v in base_dict.items()
-            if v not in [None, "", (), ["", ""], []]
+            if v not in [None, "", (), ["", ""], []] and k != "type"
         }
 
+        # Trouver la bonne classe
+        cls = type_map.get(type_req)
+        if cls is None:
+            ui.notification_show(f"❌ Type de requête inconnu : {type_req}", type="error")
+            return
+
+        # Créer l'objet
+        new_req = cls(**clean_dict)
+
+        # Vérifier doublon
         if any(
-            same_base_request(existing_req, clean_dict)
-            and
-            (clean_dict.get("type") != "Quantile" or same_quantile_params(existing_req, clean_dict))
-            and
-            (clean_dict.get("type") != "Ratio" or same_ratio_params(existing_req, clean_dict))
+            existing_req == new_req
             for existing_req in current.values()
         ):
             ui.notification_show("❌ Requête déjà existante (mêmes paramètres)", type="error")
             return
 
+        # Générer l'identifiant unique
         i = 1
         while f"req_{i}" in current:
             i += 1
         new_id = f"req_{i}"
 
-        current[new_id] = clean_dict
+        current[new_id] = new_req
         requetes.set(current)
         ui.notification_show(f"✅ Requête `{new_id}` ajoutée", type="message")
-        ui.update_selectize("delete_req", choices=["TOUTES"] + list(requetes().keys()))
+        ui.update_selectize("delete_req", choices=["TOUTES"] + list(current.keys()))
 
     @reactive.effect
     @reactive.event(input.delete_btn)
@@ -813,7 +691,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         dict_results = {}
 
         for key, req in data_requetes.items():
-            resultat = process_request(dataset(), req, use_bounds=False).to_pandas()
+            resultat = req.execute(dataset(), use_bounds=False).to_pandas()
             dict_results[key] = resultat
 
         return dict_results

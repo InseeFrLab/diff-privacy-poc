@@ -48,7 +48,7 @@ def make_radio_buttons(request, filter_type: str, dict_results):
     priorite = {"Comptage": "2", "Total": "2", "Moyenne": "1", "Ratio": "1", "Quantile": "3"}
 
     for key, req in request.items():
-        if req["type"] == filter_type:
+        if req.__class__.__name__ == filter_type:
             radio_buttons_id = key
 
             # Contenu du tableau en HTML
@@ -90,7 +90,7 @@ def make_radio_buttons(request, filter_type: str, dict_results):
                     radio_buttons_id,
                     label=title_with_popover,
                     choices={"1": 1, "2": 2, "3": 3},
-                    selected=priorite[req["type"]],
+                    selected=priorite[req.__class__.__name__],
                     inline=True
                 )
             )

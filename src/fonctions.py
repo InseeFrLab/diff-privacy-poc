@@ -29,11 +29,11 @@ OPS = {
 
 
 def optimisation_chaine(
-    dict_query: dict[str, dict[str, Any]], modalite
+    dict_query: dict[str, dict[str, Any]], modalite, budget_total
 ) -> dict[str, dict[str, Any]]:
 
-    filtres_uniques = set(v.get("filtre") for v in dict_query.values())
-    variables_uniques = set(v.get("variable") for v in dict_query.values())
+    filtres_uniques = set(query.filtre for query in dict_query.values())
+    variables_uniques = set(getattr(query, "variable", None) for query in dict_query.values())
 
     requetes_finales = {}
 
@@ -41,10 +41,10 @@ def optimisation_chaine(
         for variable in variables_uniques:
             query_filtre_variable = {
                 k: v for k, v in dict_query.items()
-                if v.get("variable") == variable and v.get("filtre") == filtre
+                if getattr(v, "variable", None) == variable and v.filtre == filtre
             }
             query_filtre_variable_opt = optimization_boosted(
-                dict_query=query_filtre_variable, modalite=modalite
+                dict_query=query_filtre_variable, modalite=modalite, budget_total=budget_total
             )
             requetes_finales.update(query_filtre_variable_opt)
 
@@ -115,11 +115,11 @@ def load_yaml_metadata(dataset_name: str = "dataset") -> dict:
 
 
 def intervalle_confiance_quantile(dataset: pl.LazyFrame, req: dict, epsilon: float, vrai_tableau: pl.DataFrame):
-    variable = req.get("variable")
-    bounds_min, bounds_max = req.get("bounds")
-    alphas = [float(a) for a in req.get("alpha")]
-    nb_candidats = int(req.get("nb_candidats"))
-    by = req.get("by")
+    variable = req.variable
+    bounds_min, bounds_max = req.bounds
+    alphas = [float(a) for a in req.alpha]
+    nb_candidats = int(req.nb_candidats)
+    by = req.by
 
     candidats = np.linspace(bounds_min, bounds_max, nb_candidats + 1)
     precisions_by_alpha = {alpha: [] for alpha in alphas}
@@ -385,7 +385,7 @@ def ajouter_colonne_value(x_df_info, data_query, results_store):
     X_df_infos["sigma2"] = np.nan
 
     for key, df_valeurs in results_store.items():
-        groupement = data_query[key]["groupement"]
+        groupement = data_query[key].groupement
 
         # Identifier la colonne valeur dans le DataFrame
         colonnes_valeur = ['count', 'sum', 'value']
@@ -408,7 +408,7 @@ def ajouter_colonne_value(x_df_info, data_query, results_store):
             jointure = pd.merge(sous_df, df_valeurs, how='left', on=list(groupement))
             X_df_infos.loc[masque, "value"] = jointure[valeur_col].values
 
-        X_df_infos.loc[masque, "sigma2"] = data_query[key]["sigma2"]
+        X_df_infos.loc[masque, "sigma2"] = data_query[key].sigma2
 
     return X_df_infos
 
@@ -422,7 +422,7 @@ def mettre_a_jour_results_store(x_df_info, data_query, results_store, col_source
     results_modif = {}
 
     for key, df_valeurs in results_store.items():
-        groupement = data_query[key]["groupement"]
+        groupement = data_query[key].groupement
         masque = x_df_info["requête"] == groupement
         if not masque.any():
             continue
@@ -459,7 +459,7 @@ def calcul_MCG(results_store, modalite, dict_query, type_req, pos=True):
     Returns:
         dict de DataFrames mis à jour.
     """
-    liste_requests = [d["groupement"] for d in dict_query.values()]
+    liste_requests = [d.groupement for d in dict_query.values()]
 
     if len(liste_requests) == 0:
         return None
@@ -509,15 +509,15 @@ def calcul_MCG(results_store, modalite, dict_query, type_req, pos=True):
 
 # ------------------------------------------
 # Estimation de l'incertitude (variance corrigée) via méthode boostée
-def optimization_boosted(modalite, dict_query):
+def optimization_boosted(modalite, dict_query, budget_total):
     """
     Calcule la variance corrigée de beta sous contraintes, met à jour dict_query avec 'scale'.
     """
-    liste_requests = [d["groupement"] for d in dict_query.values()]
+    liste_requests = [d.groupement for d in dict_query.values()]
     nb_modalite = {k: len(v) for k, v in modalite.items()}
     X, R, X_df_infos = MCG(liste_requests, modalite)
 
-    dict_request = {key: {"nb_cellule": produit_modalites(query["groupement"], nb_modalite), "sigma2": query["sigma2"]} for key, query in dict_query.items()}
+    dict_request = {key: {"nb_cellule": produit_modalites(query.groupement, nb_modalite), "sigma2": query.precision_dp(budget_total)} for key, query in dict_query.items()}
 
     # Matrice de variance Omega (hétéroscédastique)
     sigma2 = np.array(list(itertools.chain.from_iterable(
@@ -546,7 +546,7 @@ def optimization_boosted(modalite, dict_query):
     # Calcul scale par requête
     for key in dict_request:
         nb = dict_request[key]["nb_cellule"]
-        dict_query[key]["scale"] = np.sqrt(var_Xbeta_constrained[index])
+        dict_query[key].scale = np.sqrt(var_Xbeta_constrained[index])
         index += nb
     return dict_query
 
@@ -556,8 +556,8 @@ def update_context(
 ) -> tuple[Union[dp.Context, None], Union[dp.Context, None]]:
 
     # Séparer les poids selon le type de requête
-    poids_rho = [req["poids"] for req in requete.values() if req["type"].lower() != "quantile"]
-    poids_eps = [req["poids"] for req in requete.values() if req["type"].lower() == "quantile"]
+    poids_rho = [req.poids for req in requete.values() if req.__class__.__name__ != "Quantile"]
+    poids_eps = [req.poids for req in requete.values() if req.__class__.__name__ == "Quantile"]
 
     somme_rho = sum(poids_rho)
     somme_eps = sum(poids_eps)
@@ -732,7 +732,7 @@ def get_weights(request: dict[str, dict[str, Any]], dict_values: dict[str, str])
     }
 
     for k, v in weights.items():
-        req_type = request[k].get("type")
+        req_type = request[k].__class__.__name__
         factor = adjustment_factors.get(req_type, 1)
         weights[k] = v / factor
 

@@ -24,13 +24,13 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
     final_results = {}
     intermed_results = {}
 
-    query_comptage = {k: v for k, v in data_query.items() if v["type"].lower() in ["count", "comptage"]}
-    filtres_uniques = set(v.get("filtre") for v in query_comptage.values())
+    query_comptage = {k: v for k, v in data_query.items() if v.__class__.__name__ == "Comptage"}
+    filtres_uniques = set(query.filtre for query in query_comptage.values())
 
     for filtre in filtres_uniques:
         query_filtre = {
             k: v for k, v in query_comptage.items()
-            if v.get("filtre") == filtre
+            if v.filtre == filtre
         }
 
         results_filtre = {k: v for k, v in current_results.items() if k in query_filtre.keys()}
@@ -39,33 +39,32 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
 
         intermed_results.update(results_filtre)
 
-    query_total = {k: v for k, v in data_query.items() if v["type"].lower() in ["sum", "total"]}
-    filtres_uniques = set(v.get("filtre") for v in query_total.values())
-    variables_uniques = set(v["variable"] for v in query_total.values())
+    query_total = {k: v for k, v in data_query.items() if v.__class__.__name__ == "Total"}
+    filtres_uniques = set(query.filtre for query in query_total.values())
+    variables_uniques = set(getattr(query, "variable", None) for query in query_total.values())
 
     for filtre in filtres_uniques:
         for variable in variables_uniques:
-            query_filtre = {
+            query_filtre_variable = {
                 k: v for k, v in query_total.items()
-                if v.get("filtre") == filtre and v.get("variable") == variable
+                if getattr(v, "variable", None) == variable and v.filtre == filtre
             }
-
-            results_filtre = {k: v for k, v in current_results.items() if k in query_filtre.keys()}
-            results_filtre = calcul_MCG(results_filtre, modalite, query_filtre, "sum", pos=False)
+            results_filtre = {k: v for k, v in current_results.items() if k in query_filtre_variable.keys()}
+            results_filtre = calcul_MCG(results_filtre, modalite, query_filtre_variable, "sum", pos=False)
             intermed_results.update(results_filtre)
 
     for key, req in requetes.items():
 
-        if req["type"] == "Total":
+        if req.__class__.__name__ == "Total":
             key_query_comptage = next(
-                (k for k, v in data_query.items() if key in v["req"] and v["type"] == "Comptage"),
+                (k for k, v in data_query.items() if key in v.id_req and v.__class__.__name__ == "Comptage"),
                 None  # valeur par défaut si rien n'est trouvé
             )
             key_query_total = next(
-                (k for k, v in data_query.items() if key in v["req"] and v["type"] == "Total"),
+                (k for k, v in data_query.items() if key in v.id_req and v.__class__.__name__ == "Total"),
                 None
             )
-            L, U = req["bounds"]
+            L, U = req.bounds
             m = (U + L) / 2
 
             df_result_comptage = intermed_results[key_query_comptage]
@@ -83,16 +82,16 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
 
             df_result["sum"] = df_result["sum"] + df_result["count"] * m
 
-        elif req["type"] == "Moyenne":
+        elif req.__class__.__name__ == "Moyenne":
             key_query_comptage = next(
-                (k for k, v in data_query.items() if key in v["req"] and v["type"] == "Comptage"),
+                (k for k, v in data_query.items() if key in v.id_req and v.__class__.__name__ == "Comptage"),
                 None  # valeur par défaut si rien n'est trouvé
             )
             key_query_total = next(
-                (k for k, v in data_query.items() if key in v["req"] and v["type"] == "Total"),
+                (k for k, v in data_query.items() if key in v.id_req and v.__class__.__name__ == "Total"),
                 None
             )
-            L, U = req["bounds"]
+            L, U = req.bounds
             m = (U + L) / 2
 
             df_result_comptage = intermed_results[key_query_comptage]
@@ -116,26 +115,26 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
                 axis=1
             )
 
-        elif req["type"] == "Ratio":
+        elif req.__class__.__name__ == "Ratio":
             key_query_comptage = next(
-                (k for k, v in data_query.items() if key in v["req"] and v["type"] == "Comptage"),
+                (k for k, v in data_query.items() if key in v.id_req and v.__class__.__name__ == "Comptage"),
                 None  # valeur par défaut si rien n'est trouvé
             )
-            variable_num = req["variable"]
-            variable_denom = req["variable_denominateur"]
+            variable_num = req.variable_numerateur
+            variable_denom = req.variable_denominateur
 
-            L, U = req["bounds"]
+            L, U = req.bounds_numerateur
             m_num = (U + L) / 2
 
-            L, U = req["bounds_denominateur"]
+            L, U = req.bounds_denominateur
             m_denom = (U + L) / 2
 
             key_query_total_num = next(
-                (k for k, v in data_query.items() if key in v["req"] and v["type"] == "Total" and v["variable"] == variable_num),
+                (k for k, v in data_query.items() if key in v.id_req and v.__class__.__name__ == "Total" and v.variable == variable_num),
                 None
             )
             key_query_total_denom = next(
-                (k for k, v in data_query.items() if key in v["req"] and v["type"] == "Total" and v["variable"] == variable_denom),
+                (k for k, v in data_query.items() if key in v.id_req and v.__class__.__name__ == "Total" and v.variable == variable_denom),
                 None
             )
 
@@ -166,12 +165,12 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
             )
 
         else:
-            key_query = next((k for k, v in data_query.items() if key in v["req"]), None)
+            key_query = next((k for k, v in data_query.items() if key in v.id_req), None)
 
-            if req["type"] == "Comptage":
+            if req.__class__.__name__ == "Comptage":
                 df_result = intermed_results[key_query]
 
-            if req["type"] == "Quantile":
+            if req.__class__.__name__ == "Quantile":
                 df_result = current_results[key_query]
 
         df_result = df_result.round(1)
@@ -208,7 +207,7 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
         )
 
         panels.append(
-            ui.accordion_panel(f"{key} — {req.get('type', '—')}", content_row, open=True)
+            ui.accordion_panel(f"{key} — {req.__class__.__name__}", content_row, open=True)
         )
 
     results_store.set(final_results)

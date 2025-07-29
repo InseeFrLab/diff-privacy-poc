@@ -1,5 +1,5 @@
 from src.request_class import (
-    count_dp, mean_dp, sum_centered_dp, quantile_dp
+    count_dp, sum_centered_dp, quantile_dp
 )
 from src.fonctions import parse_filter_string
 import polars as pl
@@ -14,20 +14,20 @@ from typing import Any
 def df_comptage(requetes, conception_query_count) -> pd.DataFrame:
     query_comptage = conception_query_count()
     data_requetes = requetes()
-    req_comptage = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["count", "comptage"]}
+    req_comptage = {k: v for k, v in data_requetes.items() if v.__class__.__name__ == "Comptage"}
     results = []
     for query in query_comptage.values():
 
-        for req in query["req"]:
+        for req in query.id_req:
 
             if req in req_comptage:
 
                 results.append({
                     "requête": req,
-                    "groupement": query["groupement_style"],
-                    "filtre": query.get("filtre"),
-                    "écart type estimation": query["scale"],
-                    "écart type bruit": np.sqrt(query["sigma2"])
+                    "groupement": query.groupement_style,
+                    "filtre": query.filtre,
+                    "écart type estimation": query.scale,
+                    "écart type bruit": np.sqrt(query.sigma2)
                 })
     return pd.DataFrame(results).dropna(axis=1, how="all").round(1)
 
@@ -36,7 +36,7 @@ def df_total(dataset, requetes, conception_query_count, conception_query_sum) ->
     query_comptage = conception_query_count()
     query_total = conception_query_sum()
     data_requetes = requetes()
-    req_total = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["total", "sum", "somme"]}
+    req_total = {k: v for k, v in data_requetes.items() if v.__class__.__name__ == "Total"}
 
     results = []
 
@@ -44,21 +44,19 @@ def df_total(dataset, requetes, conception_query_count, conception_query_sum) ->
 
         for query in query_comptage.values():
 
-            if key in query["req"]:
-                sigma2_comptage = query["sigma2"]
-                scale_comptage = query["scale"]
+            if key in query.id_req:
+                sigma2_comptage = query.sigma2
+                scale_comptage = query.scale
                 break
-
-        variable = req["variable"]
 
         for query in query_total.values():
 
-            if key in query["req"] and query["variable"] == variable:
+            if key in query.id_req and query.variable == req.variable:
 
-                sigma2_total_centre = query["sigma2"]
-                scale_total_centre = query["scale"]
+                sigma2_total_centre = query.sigma2
+                scale_total_centre = query.scale
 
-                L, U = query["bounds"]
+                L, U = query.bounds
 
                 m = (U + L)/2
 
@@ -66,10 +64,10 @@ def df_total(dataset, requetes, conception_query_count, conception_query_sum) ->
 
                 scale = np.sqrt(var_comptage + scale_total_centre**2)
 
-                label = f"{variable}<br>groupement: {query["groupement_style"]}"
+                label = f"{req.variable}<br>groupement: {query.groupement_style}"
 
-                resultat = process_request(dataset().lazy(), req)
-                resultat_non_biaise = process_request(dataset().lazy(), req, use_bounds=False)
+                resultat = req.execute(dataset(), use_bounds=True)
+                resultat_non_biaise = req.execute(dataset(), use_bounds=False)
 
                 list_cv = []
                 list_biais_relatif = []
@@ -90,9 +88,9 @@ def df_total(dataset, requetes, conception_query_count, conception_query_sum) ->
                 results.append({
                     "requête": key,
                     "label": label,
-                    "variable": variable,
-                    "groupement": query["groupement_style"],
-                    "filtre": query.get("filtre"),
+                    "variable": req.variable,
+                    "groupement": query.groupement_style,
+                    "filtre": query.filtre,
                     "cv moyen (%)": cv_moyen,
                     "biais relatif moyen (%)": biais_relatif_moyen,
                     "écart type estimation": scale,
@@ -111,7 +109,7 @@ def df_moyenne(dataset, requetes, conception_query_count, conception_query_sum):
     query_comptage = conception_query_count()
     query_total = conception_query_sum()
     data_requetes = requetes()
-    req_moyenne = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["moyenne", "mean"]}
+    req_moyenne = {k: v for k, v in data_requetes.items() if v.__class__.__name__ == "Moyenne"}
 
     results = []
 
@@ -119,31 +117,29 @@ def df_moyenne(dataset, requetes, conception_query_count, conception_query_sum):
 
         for query in query_comptage.values():
 
-            if key in query["req"]:
-                sigma2_comptage = query["sigma2"]
-                scale_comptage = query["scale"]
+            if key in query.id_req:
+                sigma2_comptage = query.sigma2
+                scale_comptage = query.scale
                 break
-
-        variable = req["variable"]
 
         for query in query_total.values():
 
-            if key in query["req"] and query["variable"] == variable:
+            if key in query.id_req and query.variable == req.variable:
 
-                sigma2_total_centre = query["sigma2"]
-                scale_total_centre = query["scale"]
+                sigma2_total_centre = query.sigma2
+                scale_total_centre = query.scale
 
-                L, U = query["bounds"]
+                L, U = query.bounds
                 m = (U + L)/2
 
                 var_comptage = (scale_comptage * m)**2
 
                 scale_total = np.sqrt(var_comptage + scale_total_centre**2)
 
-                label = f"{variable}<br>groupement: {query["groupement_style"]}"
+                label = f"{req.variable}<br>groupement: {query.groupement_style}"
 
-                resultat = process_request(dataset().lazy(), req)
-                resultat_non_biaise = process_request(dataset().lazy(), req, use_bounds=False)
+                resultat = req.execute(dataset(), use_bounds=True)
+                resultat_non_biaise = req.execute(dataset(), use_bounds=False)
 
                 list_var = []
                 list_cv = []
@@ -171,9 +167,9 @@ def df_moyenne(dataset, requetes, conception_query_count, conception_query_sum):
                 results.append({
                     "requête": key,
                     "label": label,
-                    "variable": variable,
-                    "groupement": query["groupement_style"],
-                    "filtre": query.get("filtre"),
+                    "variable": req.variable,
+                    "groupement": query.groupement_style,
+                    "filtre": query.filtre,
                     "cv moyen (%)": cv_moyen,
                     "biais relatif moyen (%)": biais_relatif_moyen,
                     "écart type moyen estimation ": np.sqrt(var_moyenne),
@@ -193,7 +189,7 @@ def df_ratio(dataset, requetes, conception_query_count, conception_query_sum):
     query_comptage = conception_query_count()
     query_total = conception_query_sum()
     data_requetes = requetes()
-    req_ratio = {k: v for k, v in data_requetes.items() if v["type"].lower() in ["ratio"]}
+    req_ratio = {k: v for k, v in data_requetes.items() if v.__class__.__name__ == "Ratio"}
 
     results = []
 
@@ -201,21 +197,21 @@ def df_ratio(dataset, requetes, conception_query_count, conception_query_sum):
 
         for query in query_comptage.values():
 
-            if key in query["req"]:
-                sigma2_comptage = query["sigma2"]
-                scale_comptage = query["scale"]
+            if key in query.id_req:
+                sigma2_comptage = query.sigma2
+                scale_comptage = query.scale
                 break
 
-        variable = req["variable"]
+        variable_num = req.variable_numerateur
 
         for query in query_total.values():
 
-            if key in query["req"] and query["variable"] == variable:
+            if key in query.id_req and query.variable == variable_num:
 
-                sigma2_total_num_centre = query["sigma2"]
-                scale_total_num_centre = query["scale"]
+                sigma2_total_num_centre = query.sigma2
+                scale_total_num_centre = query.scale
 
-                L, U = query["bounds"]
+                L, U = query.bounds
                 m_num = (U + L)/2
 
                 var_num_comptage = (scale_comptage * m_num)**2
@@ -224,26 +220,26 @@ def df_ratio(dataset, requetes, conception_query_count, conception_query_sum):
 
                 break
 
-        variable_denom = req["variable_denominateur"]
+        variable_denom = req.variable_denominateur
 
         for query in query_total.values():
 
-            if key in query["req"] and query["variable"] == variable_denom:
+            if key in query.id_req and query.variable == variable_denom:
 
-                sigma2_total_denom_centre = query["sigma2"]
-                scale_total_denom_centre = query["scale"]
+                sigma2_total_denom_centre = query.sigma2
+                scale_total_denom_centre = query.scale
 
-                L, U = query["bounds"]
+                L, U = query.bounds
                 m_denom = (U + L)/2
 
                 var_denom_comptage = (scale_comptage * m_denom)**2
 
                 scale_total_denom = np.sqrt(var_denom_comptage + scale_total_denom_centre**2)
 
-                label = f"{variable}<br>groupement: {query["groupement_style"]}"
+                label = f"{variable_num}<br>sur {variable_denom}<br>groupement: {query.groupement_style}"
 
-                resultat = process_request(dataset().lazy(), req)
-                resultat_non_biaise = process_request(dataset().lazy(), req, use_bounds=False)
+                resultat = req.execute(dataset(), use_bounds=True)
+                resultat_non_biaise = req.execute(dataset(), use_bounds=False)
 
                 list_var = []
                 list_cv = []
@@ -272,10 +268,10 @@ def df_ratio(dataset, requetes, conception_query_count, conception_query_sum):
                 results.append({
                     "requête": key,
                     "label": label,
-                    "variable numérateur": variable,
+                    "variable numérateur": variable_num,
                     "variable dénominateur": variable_denom,
-                    "groupement": query["groupement_style"],
-                    "filtre": query.get("filtre"),
+                    "groupement": query.groupement_style,
+                    "filtre": query.filtre,
                     "cv moyen (%)": cv_moyen,
                     "biais relatif moyen (%)": biais_relatif_moyen,
                     "écart type moyen estimation ": np.sqrt(var_moyenne),
@@ -299,18 +295,18 @@ def df_quantile(conception_query_quantile) -> pd.DataFrame:
 
     results = []
     for query in query_quantile.values():
-        variable = query["variable"]
-        label = f"{variable}<br>groupement: {query['groupement_style']}"
+        variable = query.variable
+        label = f"{variable}<br>groupement: {query.groupement_style}"
 
-        for quantile_key, taille_ic in query["scale"].items():
+        for quantile_key, taille_ic in query.scale.items():
             alpha = float(quantile_key.removeprefix("quantile_"))
 
             results.append({
-                "requête": query["req"][0],
+                "requête": query.id_req[0],
                 "label": label,
                 "quantile": choix_quantile[alpha],
-                "groupement": query["groupement_style"],
-                "filtre": query.get("filtre"),
+                "groupement": query.groupement_style,
+                "filtre": query.filtre,
                 "taille moyenne IC 95%": taille_ic,
             })
 
@@ -322,15 +318,16 @@ async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dic
 
     for i, (key, query) in enumerate(dict_query.items(), start=1):
 
-        type_req = query.get("type", "—")
+        type_req = query.__class__.__name__
         progress.set(i, message=f"Requête {key} — {type_req}", detail="Calcul en cours...")
 
-        dp_result = process_request_dp(context_rho, context_eps, key_values, query)
-        dp_result = dp_result.execute()
-        # print(dp_result.summarize())
-        df_result = dp_result.release().collect()
+        if type_req == "Quantile":
+            context_use = context_eps
+        else:
+            context_use = context_rho
 
-        by = query.get("by")
+        df_result = query.execute_dp(context_use, key_values)
+        by = query.by
         if by and df_result.shape[1] > 1:
             # Colonnes restantes (dans l'ordre d'origine, sauf celles de `by`)
             remaining_cols = [col for col in df_result.columns if col not in by]
@@ -342,34 +339,6 @@ async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dic
         current_results[key] = df_result.to_pandas()
 
     results_store.set(current_results)
-
-
-def process_request_dp(context_rho, context_eps, key_values, req):
-    variable = req.get("variable")
-    by = req.get("by")
-    bounds = req.get("bounds")
-    filtre = req.get("filtre")
-    alpha = req.get("alpha")
-    nb_candidats = req.get("nb_candidats")
-    type_req = req["type"]
-
-    mapping = {
-            "Comptage": lambda: count_dp(context_rho, key_values, by=by, variable=None, filtre=filtre),
-            "Moyenne": lambda: mean_dp(context_rho, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre),
-            "Total": lambda: sum_centered_dp(context_rho, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre),
-            "Quantile": lambda: quantile_dp(context_eps, key_values, by=by, variable=variable, bounds=bounds, filtre=filtre, alpha=alpha, nb_candidats=nb_candidats)
-        }
-    class_mapping = {
-        "Comptage": count_dp,
-        "Moyenne": mean_dp,
-        "Total": sum_centered_dp,
-        "Quantile": quantile_dp
-    }
-
-    if type_req not in mapping:
-        raise ValueError(f"Type de requête non supporté : {type_req}")
-
-    return mapping[type_req]() # class_mapping[type_req](**req)
 
 
 def process_request(df: pl.LazyFrame, req: dict[str, Any], use_bounds: bool = True) -> pl.LazyFrame:
