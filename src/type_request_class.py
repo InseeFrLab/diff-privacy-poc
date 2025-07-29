@@ -3,10 +3,9 @@ from src.fonctions import (
     parse_filter_string
 )
 from itertools import product
-from typing import Any
 from abc import ABC, abstractmethod
 import numpy as np
-from typing import Optional, Any, Sequence, Union
+from typing import Optional, Any
 
 
 def apply_bounds(df: pl.LazyFrame, var: str, bounds: tuple[float, float]) -> pl.LazyFrame:
@@ -203,21 +202,21 @@ class Moyenne(Requete):
 
 class Ratio(Requete):
     def __init__(
-        self, variable_numerateur, variable_denominateur, bounds_numerateur,
+        self, variable, variable_denominateur, bounds,
         bounds_denominateur, by=None, filtre=None
     ):
         super().__init__(by=by, filtre=filtre)
-        self.variable = variable_numerateur
-        self.bounds = bounds_numerateur
+        self.variable_numerateur = variable
+        self.bounds_numerateur = bounds
         self.variable_denominateur = variable_denominateur
         self.bounds_denominateur = bounds_denominateur
 
     def plan_dp(self, context, key_values):
-        l_num, u_num = self.bounds
+        l_num, u_num = self.bounds_numerateur
         l_denom, u_denom = self.bounds_denominateur
         query = context.query()
         expr = (
-            pl.col(self.variable)
+            pl.col(self.variable_numerateur)
             .fill_null(0)
             .fill_nan(0)
             .dp.sum(bounds=(l_num, u_num))

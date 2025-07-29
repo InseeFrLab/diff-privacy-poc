@@ -52,6 +52,15 @@ from typing import Optional, Union
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import textwrap
+from src.type_request_class import Comptage, Total, Moyenne, Ratio, Quantile
+
+type_map = {
+    "Comptage": Comptage,
+    "Total": Total,
+    "Moyenne": Moyenne,
+    "Ratio": Ratio,
+    "Quantile": Quantile
+}
 
 dp.enable_features("contrib")
 
@@ -608,21 +617,27 @@ def server(input: Inputs, output: Outputs, session: Session):
     @reactive.effect
     @reactive.event(input.request_input)
     def _() -> None:
-        """
-        Lit un fichier JSON chargé par l'utilisateur et met à jour la variable `requetes`.
-        Affiche une notification en cas d'erreur de décodage JSON.
-        """
         fileinfo = input.request_input()
-        if not fileinfo:
-            return
-
         filepath = Path(fileinfo[0]["datapath"])
         try:
             with filepath.open(encoding="utf-8") as f:
                 data = json.load(f)
 
-            requetes.set(data)
-            ui.update_selectize("delete_req", choices=["TOUTES"] + list(data.keys()))
+            requetes_instances = {}
+            for name, params in data.items():
+                req_type = params.pop("type", None)
+                cls = type_map.get(req_type)
+                if cls is None:
+                    ui.notification_show(f"❌ Type de requête inconnu : {req_type}", type="error")
+                    continue
+                try:
+                    requetes_instances[name] = cls(**params)
+                except Exception as e:
+                    ui.notification_show(f"❌ Erreur dans la requête {name} : {e}", type="error")
+
+            requetes.set(requetes_instances)
+            print(requetes())
+            ui.update_selectize("delete_req", choices=["TOUTES"] + list(requetes_instances.keys()))
             ui.notification_show("✅ Requêtes importées avec succès", type="message")
 
         except json.JSONDecodeError:

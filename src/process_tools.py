@@ -403,14 +403,18 @@ def process_request(df: pl.LazyFrame, req: dict[str, Any], use_bounds: bool = Tr
         return df
 
     # Extraction des paramètres
-    variable = req.get("variable")
-    variable_denom = req.get("variable_denominateur")
-    by = req.get("by")
-    bounds = req.get("bounds")
-    bounds_denom = req.get("bounds_denominateur")
-    filtre = req.get("filtre")
-    list_alpha = req.get("alpha")
-    type_req = req.get("type", "").lower()
+    type_req = req.__class__.__name__.lower()
+    variable = getattr(req, "variable", None)
+    variable_denom = getattr(req, "variable_denominateur", None)
+    by = getattr(req, "by", None)
+    bounds = getattr(req, "bounds", None)
+    bounds_denom = getattr(req, "bounds_denominateur", None)
+    filtre = getattr(req, "filtre", None)
+    list_alpha = getattr(req, "alpha", None)
+
+    if type_req == "ratio":
+        variable = getattr(req, "variable_numerateur", None)
+        bounds = getattr(req, "bounds_numerateur", None)
 
     if filtre:
         df = df.filter(parse_filter_string(filtre))
