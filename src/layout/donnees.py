@@ -21,7 +21,11 @@ def sidebar_donnees():
             "Choisir un jeu de données prédéfini:",
             chemin_dataset,
         ),
-        ui.input_file("dataset_input", "Ou importer un fichier CSV ou Parquet", accept=[".csv", ".parquet"]),
+        ui.input_file(
+            "dataset_input",
+            "Ou importer un fichier CSV ou Parquet",
+            accept=[".csv", ".parquet"]
+        ),
         position='right',
         bg="#f8f8f8"
     )

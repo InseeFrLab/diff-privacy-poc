@@ -551,7 +551,7 @@ def optimization_boosted(modalite, dict_query, budget_total):
     return dict_query
 
 
-def update_context(
+def create_context(
     CONTEXT_PARAM: dict[str, Any], budget: float, requete: dict[str, dict[str, Any]]
 ) -> tuple[Union[dp.Context, None], Union[dp.Context, None]]:
 
@@ -742,7 +742,7 @@ def get_weights(request: dict[str, dict[str, Any]], dict_values: dict[str, str])
 def load_data(path: str, storage_options: Optional[dict[str, str]] = None) -> pl.LazyFrame:
     read_kwargs = {"storage_options": storage_options} if path.startswith("s3://") else {}
     lf = pl.read_parquet(path, **read_kwargs).lazy()
-    return lf.drop("geometry") if "geometry" in lf.schema else lf
+    return lf.drop("geometry") if "geometry" in lf.collect_schema() else lf
 
 
 def extract_column_names_from_choices(choices: dict) -> list[str]:
@@ -763,30 +763,6 @@ def extract_bounds(metadata: dict, var_name: str) -> list[float] | None:
     if min_val is not None and max_val is not None:
         return [float(min_val), float(max_val)]
     return None
-
-
-def same_base_request(a: dict, b: dict) -> bool:
-    return (
-        a.get("type") == b.get("type") and
-        a.get("variable") == b.get("variable") and
-        a.get("bounds") == b.get("bounds") and
-        a.get("by", []) == b.get("by", []) and
-        a.get("filtre") == b.get("filtre")
-    )
-
-
-def same_quantile_params(a: dict, b: dict) -> bool:
-    return (
-        a.get("alpha") == b.get("alpha") and
-        a.get("nb_candidats") == b.get("nb_candidats")
-    )
-
-
-def same_ratio_params(a: dict, b: dict) -> bool:
-    return (
-        a.get("variable_denominateur") == b.get("variable_denominateur") and
-        a.get("bounds_denominateur") == b.get("bounds_denominateur")
-    )
 
 
 def assert_or_notify(condition: bool, message: str) -> bool:

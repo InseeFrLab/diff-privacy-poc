@@ -1,14 +1,8 @@
-from src.request_class import (
-    count_dp, sum_centered_dp, quantile_dp
-)
-from src.fonctions import parse_filter_string
-import polars as pl
 import numpy as np
 import pandas as pd
 from src.constant import (
     choix_quantile
 )
-from typing import Any
 
 
 def df_comptage(requetes, conception_query_count) -> pd.DataFrame:
@@ -326,7 +320,11 @@ async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dic
         else:
             context_use = context_rho
 
-        df_result = query.execute_dp(context_use, key_values)
+        if "centre" in query.execute_dp.__code__.co_varnames:
+            df_result = query.execute_dp(context_use, key_values, centre=True)
+        else:
+            df_result = query.execute_dp(context_use, key_values)
+
         by = query.by
         if by and df_result.shape[1] > 1:
             # Colonnes restantes (dans l'ordre d'origine, sauf celles de `by`)
@@ -339,102 +337,3 @@ async def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dic
         current_results[key] = df_result.to_pandas()
 
     results_store.set(current_results)
-
-
-def process_request(df: pl.LazyFrame, req: dict[str, Any], use_bounds: bool = True) -> pl.LazyFrame:
-    """
-    Produit le résultat de la requête (sans confidentialité différentielle) sous forme de lazyframe.
-
-    Args:
-        df (pl.LazyFrame): Données requêtées.
-        req (dict): Dictionnaire contenant les paramètres nécessaires à la requête.
-        use_bounds (bool): Booléen indiquant si le clipping doit être appliqué ou non.
-
-    Returns:
-        pl.LazyFrame: Résultat de la requête.
-    """
-
-    def apply_bounds(df: pl.LazyFrame, var: str, bounds: tuple[float, float]) -> pl.LazyFrame:
-        """
-        Applique les bornes à une variable si elles sont définies.
-
-        Args:
-            frame (pl.LazyFrame): Données requêtées.
-            var (str): Nom de la variable clippée.
-            bounds (tuple): Bornes min et max de l'intervalle du clipping.
-
-        Returns:
-            pl.LazyFrame: Données après clipping de la variable
-        """
-        if var and bounds:
-            lower, upper = bounds
-            return df.with_columns(pl.col(var).clip(lower_bound=lower, upper_bound=upper).alias(var))
-        return df
-
-    # Extraction des paramètres
-    type_req = req.__class__.__name__.lower()
-    variable = getattr(req, "variable", None)
-    variable_denom = getattr(req, "variable_denominateur", None)
-    by = getattr(req, "by", None)
-    bounds = getattr(req, "bounds", None)
-    bounds_denom = getattr(req, "bounds_denominateur", None)
-    filtre = getattr(req, "filtre", None)
-    list_alpha = getattr(req, "alpha", None)
-
-    if type_req == "ratio":
-        variable = getattr(req, "variable_numerateur", None)
-        bounds = getattr(req, "bounds_numerateur", None)
-
-    if filtre:
-        df = df.filter(parse_filter_string(filtre))
-
-    # Application des bornes
-    if use_bounds:
-        df = apply_bounds(df, variable, bounds)
-        df = apply_bounds(df, variable_denom, bounds_denom)
-
-    # Construction du corps de la requête
-    match type_req:
-        case "comptage":
-            agg_exprs = [pl.count().alias("count")]
-
-        case "moyenne":
-            agg_exprs = [
-                pl.col(variable).sum().alias("sum"),
-                pl.count().alias("count"),
-                pl.col(variable).mean().alias("mean")
-            ]
-
-        case "total":
-            agg_exprs = [pl.col(variable).sum().alias("sum")]
-
-        case "ratio":
-            agg_exprs = [
-                pl.col(variable).sum().alias("sum_num"),
-                pl.col(variable_denom).sum().alias("sum_denom")
-            ]
-
-        case "quantile":
-            if not list_alpha:
-                raise ValueError("Liste des quantiles `alpha` manquante pour le type 'quantile'")
-            agg_exprs = [
-                pl.col(variable)
-                .quantile(float(alpha), interpolation="nearest")
-                .alias(f"quantile_{float(alpha)}")
-                for alpha in list_alpha
-            ]
-
-        case _:
-            raise ValueError(f"Type de requête inconnu : {req.get('type')}")
-
-    # Appliquer aggregation selon `by`
-    if by:
-        df = df.group_by(by).agg(agg_exprs).sort(by=by)
-    else:
-        df = df.select(agg_exprs)
-
-    # Si ratio, ajouter la colonne "ratio"
-    if type_req == "ratio":
-        df = df.with_columns((pl.col("sum_num") / pl.col("sum_denom")).alias("ratio"))
-
-    return df.collect()

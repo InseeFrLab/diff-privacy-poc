@@ -34,7 +34,6 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
         }
 
         results_filtre = {k: v for k, v in current_results.items() if k in query_filtre.keys()}
-
         results_filtre = calcul_MCG(results_filtre, modalite, query_comptage, "count")
 
         intermed_results.update(results_filtre)
@@ -213,7 +212,14 @@ def afficher_resultats(results_store, requetes, data_query, modalite):
     results_store.set(final_results)
 
     return ui.TagList(
-        ui.div("📤 Exporter vos résultats respectant la confidentialité différentielle :", class_="mb-2"),
-        ui.download_button("download_xlsx", "💾 Télécharger les résultats (XLSX)", class_="btn-outline-primary mb-4"),
+        ui.div(
+            "📤 Exporter vos résultats respectant la confidentialité différentielle :",
+            class_="mb-2"
+        ),
+        ui.download_button(
+            "download_xlsx",
+            "💾 Télécharger les résultats (XLSX)",
+            class_="btn-outline-primary mb-4"
+        ),
         ui.accordion(*panels, open=True)
     )
