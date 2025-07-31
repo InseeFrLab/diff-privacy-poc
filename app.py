@@ -12,7 +12,7 @@ from src.layout.conception_budget import page_conception_budget, make_radio_butt
 from src.layout.resultat_dp import page_resultat_dp, afficher_resultats
 from src.layout.etat_budget_dataset import page_etat_budget_dataset
 from src.process_tools import (
-    calculer_toutes_les_requetes,
+    calculer_toutes_les_requetes, optimisation_et_assemblage_results,
     df_comptage, df_total, df_moyenne, df_ratio, df_quantile
 )
 from src.fonctions import (
@@ -53,6 +53,7 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import textwrap
 from src.request_class import Comptage, Total, Moyenne, Ratio, Quantile
+from src.pipeline_class import Pipeline
 
 dp.enable_features("contrib")
 
@@ -139,11 +140,11 @@ def bloc_budget_server(
     def dataframe() -> pd.DataFrame:
         # Table de correspondance entre type_req et fonction de calcul
         dispatch = {
-            "Comptage": lambda: df_comptage(requetes, conception_count),
-            "Total": lambda: df_total(dataset, requetes, conception_count, conception_sum),
-            "Moyenne": lambda: df_moyenne(dataset, requetes, conception_count, conception_sum),
-            "Ratio": lambda: df_ratio(dataset, requetes, conception_count, conception_sum),
-            "Quantile": lambda: df_quantile(conception_quantile),
+            "Comptage": lambda: df_comptage(requetes(), conception_count()),
+            "Total": lambda: df_total(dataset(), requetes(), conception_count(), conception_sum()),
+            "Moyenne": lambda: df_moyenne(dataset(), requetes(), conception_count(), conception_sum()),
+            "Ratio": lambda: df_ratio(dataset(), requetes(), conception_count(), conception_sum()),
+            "Quantile": lambda: df_quantile(conception_quantile()),
         }
 
         return dispatch[type_req]()
@@ -215,6 +216,11 @@ def server(input: Inputs, output: Outputs, session: Session):
     onglet_actuel: reactive.Value[str] = reactive.Value("Conception du budget")  # Onglet par défaut
     trigger_update_budget: reactive.Value[int] = reactive.Value(0)
     _last_choices = {"group_by": None}  # Mémoire interne pour ne pas déclencher update inutilement
+
+
+    @reactive.calc
+    def requetes_pipeline() -> Pipeline:
+        return Pipeline(requetes(), dataset())
 
     # ----------------------------------------------------------------------------------------------
     # Section Calcul -------------------------------------------------------------------------------
@@ -1072,11 +1078,13 @@ def server(input: Inputs, output: Outputs, session: Session):
                 context_param, input.budget_total(), data_query
             )
 
-            await calculer_toutes_les_requetes(
-                context_rho, context_eps, keys, data_query, p, resultats_df
+            calculer_toutes_les_requetes(
+                context_rho, context_eps, keys, data_query, resultats_df, p
             )
 
-        return afficher_resultats(resultats_df, requetes(), data_query, keys)
+        optimisation_et_assemblage_results(resultats_df(), requetes(), data_query, keys)
+
+        return afficher_resultats(resultats_df, requetes())
 
     # ----------------------------------------------------------------------------------------------
 
