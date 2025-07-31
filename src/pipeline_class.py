@@ -11,6 +11,7 @@ from src.fonctions import (
     create_context, intervalle_confiance_quantile
 )
 import numpy as np
+import time
 dp.enable_features("contrib")
 
 
@@ -24,19 +25,82 @@ class Pipeline():
         self.contribution_individu_max = contribution_individu_max
         self.borne_max_taille_dataset = borne_max_taille_dataset
 
+        variables = {val for request in self.dict_req.values() if request.by for val in request.by}
+        df = self.lf.select([pl.col(v).drop_nulls() for v in variables]).collect()
+        self.key_values = {
+            v: sorted(df[v].unique().to_list())
+            for v in variables
+        }
+
+        data_requetes = {k: copy.deepcopy(v) for k, v in self.dict_req.items()}
+        self.dict_query = {}
+        i = 1
+
+        for (key, request) in data_requetes.items():
+            if request.__class__.__name__ not in ["Comptage", "Quantile"]:
+                tuple_request = request.transformation()
+            else:
+                tuple_request = (request,)
+
+            for sous_req in tuple_request:
+                if sous_req not in self.dict_query.values():
+                    sous_req.id_req.append(key)
+                    cle = f"query_{i}"
+                    self.dict_query[cle] = sous_req
+                    i += 1
+
+                else:
+                    # 🔎 Trouver la clé correspondant à la requête identique
+                    id_cle = next(k for k, v in self.dict_query.items() if v == sous_req)
+                    self.dict_query[id_cle].id_req.append(key)
+
     def execute(self, use_bounds=False, afficher=True):
+        print("==> Début execute")
+        start_global = time.time()
         dict_resultat = {}
+
         for key, request in self.dict_req.items():
+
             resultat = request.execute(df=self.lf, use_bounds=use_bounds).to_pandas()
             dict_resultat[key] = resultat
+
             if afficher:
                 print(resultat)
+
+        total_duration = time.time() - start_global
+        print(f"<== Fin execute (temps total : {total_duration:.2f} secondes)")
         return dict_resultat
 
-    def execute_dp(self, budget_global, dict_poids, optim_MCG: bool = True):
-        data_query = self._dict_query(budget_global=budget_global, dict_poids=dict_poids)
+    def execute(self, use_bounds=False, afficher=True):
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        print("==> Début execute (parallélisé)")
+        start_global = time.time()
+        dict_resultat = {}
+
+        def run_request(key, request):
+            result = request.execute(df=self.lf, use_bounds=use_bounds).to_pandas()
+            return key, result
+
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(run_request, key, request)
+                for key, request in self.dict_req.items()]
+
+            for future in as_completed(futures):
+                key, result = future.result()
+                dict_resultat[key] = result
+                if afficher:
+                    print(result)
+
+        total_duration = time.time() - start_global
+        print(f"<== Fin execute (temps total : {total_duration:.2f} secondes)")
+        return dict_resultat
+
+    def execute_dp(self, budget_global, dict_poids, optim_MCG: bool = True, progress: bool = False):
+        print("==> Début execute_dp")
+        start_global = time.time()
+
+        data_query = self._query_pondere(budget_global=budget_global, dict_poids=dict_poids)
         data_lazy = self.lf
-        keys = self._key_values()
 
         # Extraire toutes les colonnes mentionnées dans les requêtes
         vars_by = {val for request in data_query.values() if request.by for val in request.by}
@@ -72,28 +136,36 @@ class Pipeline():
             "margins": [dp.polars.Margin(max_partition_length=self.borne_max_taille_dataset)],
         }
 
+        start_context = time.time()
+
         context_rho, context_eps = create_context(
             context_param, budget_global, data_query
         )
+        duration = time.time() - start_context
+        print(f"✅ Context terminée en {duration:.2f} secondes.")
 
         resultats_df = {}
 
         calculer_toutes_les_requetes(
-            context_rho, context_eps, keys, data_query, resultats_df
+            context_rho, context_eps, self.key_values, data_query, resultats_df, progress
         )
 
-        optimisation_et_assemblage_results(resultats_df, self.dict_req, data_query, keys)
-
+        optimisation_et_assemblage_results(resultats_df, self.dict_req, data_query, self.key_values)
+        total_duration = time.time() - start_global
+        print(f"<== Fin execute_dp (temps total : {total_duration:.2f} secondes)")
         return resultats_df
 
     def precision_dp(self, budget_global, dict_poids):
-        data_query = self._dict_query(budget_global=budget_global, dict_poids=dict_poids)
+        print("==> Début precision_dp")
+        start_global = time.time()
+
+        data_query = self._query_pondere(budget_global=budget_global, dict_poids=dict_poids)
 
         query_comptage = {k: v for k, v in data_query.items() if v.__class__.__name__ == "Comptage"}
-        query_comptage = optimisation_chaine(query_comptage, self._key_values(), budget_global)
+        query_comptage = optimisation_chaine(query_comptage, self.key_values, budget_global)
 
         query_total = {k: v for k, v in data_query.items() if v.__class__.__name__ == "Total"}
-        query_total = optimisation_chaine(query_total, self._key_values(), budget_global)
+        query_total = optimisation_chaine(query_total, self.key_values, budget_global)
 
         query_quantile = {k: v for k, v in data_query.items() if v.__class__.__name__ == "Quantile"}
         filtres_uniques = set(query.filtre for query in query_quantile.values())
@@ -121,20 +193,8 @@ class Pipeline():
             "Ratio": df_ratio(self.lf, self.dict_req, query_comptage, query_total),
             "Quantile": df_quantile(query_quantile),
         }
-
-        for key, df_results in results.items():
-            if not df_results.empty:
-                if key != "Comptage":
-                    df_results = df_results.drop(columns="label")
-                # Définir l'arrondi spécifique
-                cols = [
-                    "cv moyen (%)", "biais relatif moyen (%)",
-                    "écart type comptage", "écart type bruit comptage"
-                ]
-
-                arrondi = {col: 1 if col in cols else 0 for col in df_results.columns}
-                results[key] = df_results.round(arrondi)
-
+        total_duration = time.time() - start_global
+        print(f"<== Fin precision_dp (temps total : {total_duration:.2f} secondes)")
         return results
 
     def precision_opendp(self, budget_global, dict_poids, alpha=0.05, afficher=True):
@@ -166,7 +226,7 @@ class Pipeline():
                 context_use = context_rho
 
             resultat = request.precision_opendp(
-                context=context_use, key_values=self._key_values(), alpha=alpha
+                context=context_use, key_values=self.key_values, alpha=alpha
             )
             dict_resultat[key] = resultat
 
@@ -174,47 +234,10 @@ class Pipeline():
                 print(resultat)
         return dict_resultat
 
-    def _key_values(self) -> dict[str, list[Any]]:
-        variables = {val for request in self.dict_req.values() if request.by for val in request.by}
-
-        df = self.lf.select([pl.col(v).drop_nulls() for v in variables]).collect()
-
-        result = {
-            v: sorted(df[v].unique().to_list())
-            for v in variables
-        }
-        return result
-
-    def _dict_query(self, budget_global, dict_poids) -> dict[str, dict[str, Any]]:
-        print("==> Début dict_query")
-
-        data_requetes = {k: copy.deepcopy(v) for k, v in self.dict_req.items()}
-        query = {}
-        i = 1
-
-        for (key, request) in data_requetes.items():
-            if request.__class__.__name__ not in ["Comptage", "Quantile"]:
-                tuple_request = request.transformation()
-            else:
-                tuple_request = (request,)
-
-            for sous_req in tuple_request:
-                if sous_req not in query.values():
-                    sous_req.id_req.append(key)
-                    cle = f"query_{i}"
-                    query[cle] = sous_req
-                    i += 1
-
-                else:
-                    # 🔎 Trouver la clé correspondant à la requête identique
-                    id_cle = next(k for k, v in query.items() if v == sous_req)
-                    query[id_cle].id_req.append(key)
-
-        for request in query.values():
+    def _query_pondere(self, budget_global, dict_poids) -> dict[str, dict[str, Any]]:
+        for request in self.dict_query.values():
             request.poids = sum(dict_poids.get(r, 0) for r in request.id_req)
 
             if request.__class__.__name__ in ["Comptage", "Total"]:
                 request.precision_dp(budget_global)
-
-        print("<== Fin dict_query")
-        return query
+        return self.dict_query

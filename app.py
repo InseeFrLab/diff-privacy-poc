@@ -11,15 +11,10 @@ from src.layout.preparer_requetes import (
 from src.layout.conception_budget import page_conception_budget, make_radio_buttons
 from src.layout.resultat_dp import page_resultat_dp, afficher_resultats
 from src.layout.etat_budget_dataset import page_etat_budget_dataset
-from src.process_tools import (
-    calculer_toutes_les_requetes, optimisation_et_assemblage_results,
-    df_comptage, df_total, df_moyenne, df_ratio, df_quantile
-)
 from src.fonctions import (
-    eps_from_rho_delta, optimisation_chaine,
-    create_context, parse_filter_string,
-    get_weights, intervalle_confiance_quantile,
-    load_data, manual_quantile_score, extract_column_names_from_choices,
+    eps_from_rho_delta, parse_filter_string,
+    get_weights, load_data, manual_quantile_score, 
+    extract_column_names_from_choices,
     extract_bounds,
     load_yaml_metadata, assert_or_notify
 )
@@ -45,7 +40,6 @@ import polars as pl
 import io
 import json
 import yaml
-import copy
 from typing import Any
 from shinywidgets import output_widget
 from typing import Optional, Union
@@ -54,7 +48,7 @@ import plotly.graph_objects as go
 import textwrap
 from src.request_class import Comptage, Total, Moyenne, Ratio, Quantile
 from src.pipeline_class import Pipeline
-
+import time
 dp.enable_features("contrib")
 
 www_dir = Path(__file__).parent / "www"
@@ -100,14 +94,14 @@ app_ui = ui.page_navbar(
 def radio_buttons_server(
     input: Inputs, output: Outputs, session: Session,
     requetes: reactive.Value[dict[str, dict[str, Any]]],
-    req_calcul: reactive.calc
+    requetes_pipeline_execute: reactive.calc
 ):
     type_req = session.ns
 
     @render.ui
     def radio_buttons() -> ui.TagList:
         return ui.layout_columns(
-            *make_radio_buttons(requetes(), type_req, req_calcul()),
+            *make_radio_buttons(requetes(), type_req, requetes_pipeline_execute()),
             col_widths=3
         )
 
@@ -124,30 +118,18 @@ def radio_buttons_server(
 @module.server
 def bloc_budget_server(
     input: Inputs, output: Outputs, session: Session,
-    dataset: reactive.calc,
-    requetes: reactive.Value[dict[str, dict[str, Any]]],
-    conception_count: reactive.Value[dict[str, dict[str, Any]]],
-    conception_sum: reactive.Value[dict[str, dict[str, Any]]],
-    conception_quantile: reactive.Value[dict[str, dict[str, Any]]],
+    req_pipeline: reactive.calc,
+    requetes_pipeline_precision,
     header: str
 ):
     type_req = session.ns
 
     def bloc_visible() -> bool:
-        return any(req.__class__.__name__ == type_req for req in requetes().values())
+        return any(req.__class__.__name__ == type_req for req in req_pipeline().dict_req.values())
 
     @reactive.calc
     def dataframe() -> pd.DataFrame:
-        # Table de correspondance entre type_req et fonction de calcul
-        dispatch = {
-            "Comptage": lambda: df_comptage(requetes(), conception_count()),
-            "Total": lambda: df_total(dataset(), requetes(), conception_count(), conception_sum()),
-            "Moyenne": lambda: df_moyenne(dataset(), requetes(), conception_count(), conception_sum()),
-            "Ratio": lambda: df_ratio(dataset(), requetes(), conception_count(), conception_sum()),
-            "Quantile": lambda: df_quantile(conception_quantile()),
-        }
-
-        return dispatch[type_req]()
+        return requetes_pipeline_precision()[type_req]
 
     @render.ui
     def bloc_budget() -> ui.TagList:
@@ -216,11 +198,6 @@ def server(input: Inputs, output: Outputs, session: Session):
     onglet_actuel: reactive.Value[str] = reactive.Value("Conception du budget")  # Onglet par défaut
     trigger_update_budget: reactive.Value[int] = reactive.Value(0)
     _last_choices = {"group_by": None}  # Mémoire interne pour ne pas déclencher update inutilement
-
-
-    @reactive.calc
-    def requetes_pipeline() -> Pipeline:
-        return Pipeline(requetes(), dataset())
 
     # ----------------------------------------------------------------------------------------------
     # Section Calcul -------------------------------------------------------------------------------
@@ -302,6 +279,19 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     # Page Préparer ses requêtes
     @reactive.calc
+    def requetes_pipeline() -> Pipeline:
+        return Pipeline(requetes(), dataset(), contrib_individu, borne_max_taille_dataset)
+
+    @reactive.calc
+    def requetes_pipeline_precision():
+        return requetes_pipeline().precision_dp(input.budget_total(), get_poids_req())
+
+    @reactive.calc
+    def requetes_pipeline_execute():
+        return requetes_pipeline().execute(afficher=False)
+
+    # Page Préparer ses requêtes
+    @reactive.calc
     def variable_choices() -> dict[str, Union[str, dict[str, str]]]:
         """
         Retourne un dictionnaire catégorisé des variables du dataset,
@@ -331,57 +321,11 @@ def server(input: Inputs, output: Outputs, session: Session):
             "🧮 Quantitatives": {col: col for col in quantitative}
         }
 
-    # Page Préparer ses requêtes
-    @reactive.calc
-    def req_calcul() -> dict[str, pd.DataFrame]:
-        data_requetes = requetes()
-        dict_results = {}
-
-        for key, req in data_requetes.items():
-            resultat = req.execute(dataset(), use_bounds=False).to_pandas()
-            dict_results[key] = resultat
-
-        return dict_results
-
     # ----------------------------------------------------------------------------------------------
 
     # Page Conception du budget
     @reactive.calc
-    def dict_query() -> dict[str, dict[str, Any]]:
-        print("==> Début dict_query")
-
-        data_requetes = {k: copy.deepcopy(v) for k, v in requetes().items()}  # ✅ copies indépendantes
-        query = {}
-        i = 1
-
-        for (key, request) in data_requetes.items():
-            if request.__class__.__name__ not in ["Comptage", "Quantile"]:
-                tuple_request = request.transformation()
-            else:
-                tuple_request = (request,)
-
-            for sous_req in tuple_request:
-                if sous_req not in query.values():
-                    sous_req.id_req.append(key)
-                    cle = f"query_{i}"
-                    query[cle] = sous_req
-                    i += 1
-
-                else:
-                    # 🔎 Trouver la clé correspondant à la requête identique
-                    id_cle = next(k for k, v in query.items() if v == sous_req)
-                    query[id_cle].id_req.append(key)
-
-        for request in query.values():
-            request.poids = sum(get_poids_req().get(r, 0) for r in request.id_req)
-
-        print("<== Fin dict_query")
-        return query
-
-    # Page Conception du budget
-    @reactive.calc
     def get_poids_req() -> dict[str, float]:
-        print("==> Début get_poids_req")
         data_requetes = requetes()
         values_buttons = {
             **values_buttons_comptage(), **values_buttons_total(),
@@ -389,47 +333,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             **values_buttons_quantile()
         }
         poids = get_weights(data_requetes, values_buttons)
-        print("<== Fin get_poids_req")
         return poids
-
-    # Page Conception du budget
-    @reactive.calc
-    def conception_query_count() -> dict[str, dict[str, Any]]:
-        data_query = dict_query()
-        query_comptage = {k: v for k, v in data_query.items() if v.__class__.__name__ == "Comptage"}
-        return optimisation_chaine(query_comptage, key_values(), input.budget_total())
-
-    # Page Conception du budget
-    @reactive.calc
-    def conception_query_sum() -> dict[str, dict[str, Any]]:
-        data_query = dict_query()
-        query_total = {k: v for k, v in data_query.items() if v.__class__.__name__ == "Total"}
-        return optimisation_chaine(query_total, key_values(), input.budget_total())
-
-    # Page Conception du budget
-    @reactive.calc
-    def conception_query_quantile() -> dict[str, dict[str, Any]]:
-        data_query = dict_query()
-        query_quantile = {k: v for k, v in data_query.items() if v.__class__.__name__ == "Quantile"}
-        filtres_uniques = set(query.filtre for query in query_quantile.values())
-        variables_uniques = set(query.variable for query in query_quantile.values())
-
-        for filtre in filtres_uniques:
-            for variable in variables_uniques:
-                query_filtre_variable = {
-                    k: v for k, v in query_quantile.items()
-                    if v.variable == variable and v.filtre == filtre
-                }
-
-                for key_query, query in query_filtre_variable.items():
-
-                    epsilon = np.sqrt(8 * input.budget_total() * query.poids)
-
-                    vrai_tableau = query.execute(dataset(), use_bounds=False)
-                    ic = intervalle_confiance_quantile(dataset(), query, epsilon, vrai_tableau)
-                    query_quantile[key_query].scale = ic
-
-        return query_quantile
 
     # Non utilisé pour l'instant
     @reactive.calc
@@ -439,7 +343,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         d'entiers de 0 à (nombre de modalités - 1).
         Utilise les métadonnées YAML pour récupérer le nombre de modalités uniques par variable.
         """
-        data_query = dict_query()
+        # data_query = dict_query()
         metadata_str = yaml_metadata_str()
         metadata_dict = yaml.safe_load(metadata_str) if metadata_str else {}
 
@@ -459,21 +363,6 @@ def server(input: Inputs, output: Outputs, session: Session):
                 nb_modalites[var] = list(range(nb))
 
         return nb_modalites
-
-    # Page Conception du budget
-    # Extrait les modalités uniques des variables qualitatives
-    @reactive.calc
-    def key_values() -> dict[str, list[Any]]:
-        data_query = dict_query()
-        variables = {val for request in data_query.values() if request.by for val in request.by}
-
-        df = dataset().select([pl.col(v).drop_nulls() for v in variables]).collect()
-
-        result = {
-            v: sorted(df[v].unique().to_list())
-            for v in variables
-        }
-        return result
 
     # ----------------------------------------------------------------------------------------------
 
@@ -527,40 +416,35 @@ def server(input: Inputs, output: Outputs, session: Session):
     # ----------------------------------------------------------------------------------------------
 
     # Page Conception du budget
-    values_buttons_comptage = radio_buttons_server("Comptage", requetes, req_calcul)
-    values_buttons_total = radio_buttons_server("Total", requetes, req_calcul)
-    values_buttons_moyenne = radio_buttons_server("Moyenne", requetes, req_calcul)
-    values_buttons_ratio = radio_buttons_server("Ratio", requetes, req_calcul)
-    values_buttons_quantile = radio_buttons_server("Quantile", requetes, req_calcul)
+    values_buttons_comptage = radio_buttons_server("Comptage", requetes, requetes_pipeline_execute)
+    values_buttons_total = radio_buttons_server("Total", requetes, requetes_pipeline_execute)
+    values_buttons_moyenne = radio_buttons_server("Moyenne", requetes, requetes_pipeline_execute)
+    values_buttons_ratio = radio_buttons_server("Ratio", requetes, requetes_pipeline_execute)
+    values_buttons_quantile = radio_buttons_server("Quantile", requetes, requetes_pipeline_execute)
 
     # Page Conception du budget
     bloc_budget_server(
-        "Comptage", dataset, requetes, conception_query_count,
-        conception_query_sum, conception_query_quantile,
+        "Comptage", requetes_pipeline, requetes_pipeline_precision,
         header="Répartition du budget pour les comptages"
     )
     # Page Conception du budget
     bloc_budget_server(
-        "Total", dataset, requetes, conception_query_count,
-        conception_query_sum, conception_query_quantile,
+        "Total", requetes_pipeline, requetes_pipeline_precision,
         header="Répartition du budget pour les totaux"
     )
     # Page Conception du budget
     bloc_budget_server(
-        "Moyenne", dataset, requetes, conception_query_count,
-        conception_query_sum, conception_query_quantile,
+        "Moyenne", requetes_pipeline, requetes_pipeline_precision,
         header="Répartition du budget pour les moyennes"
     )
     # Page Conception du budget
     bloc_budget_server(
-        "Ratio", dataset, requetes, conception_query_count,
-        conception_query_sum, conception_query_quantile,
+        "Ratio", requetes_pipeline, requetes_pipeline_precision,
         header="Répartition du budget pour les ratios"
     )
     # Page Conception du budget
     bloc_budget_server(
-        "Quantile", dataset, requetes, conception_query_count,
-        conception_query_sum, conception_query_quantile,
+        "Quantile", requetes_pipeline, requetes_pipeline_precision,
         header="Répartition du budget pour les quantiles"
     )
 
@@ -1024,66 +908,22 @@ def server(input: Inputs, output: Outputs, session: Session):
         if not requetes_affichees:
             return ui.p("Aucune requête entrée.")
 
-        return affichage_requete(requetes_affichees, req_calcul())
+        return affichage_requete(requetes_affichees, requetes_pipeline_execute())
 
     # ----------------------------------------------------------------------------------------------
 
     # Page Résultat DP
     @render.ui
     @reactive.event(input.confirm_validation)
-    async def req_dp_display() -> ui.TagList:
+    def req_dp_display() -> ui.TagList:
 
-        data_query = dict_query()
-        data_lazy = dataset()
-        keys = key_values()
+        req_pipeline = requetes_pipeline()
 
-        # Extraire toutes les colonnes mentionnées dans les requêtes
-        vars_by = {val for request in data_query.values() if request.by for val in request.by}
-        vars_variable = {
-            v for v in (getattr(req, "variable", None) for req in data_query.values())
-            if v is not None
-        }
-        vars_variable_num = {
-            v for v in (getattr(req, "variable_numerateur", None) for req in data_query.values())
-            if v is not None
-        }
-        vars_variable_denom = {
-            v for v in (getattr(req, "variable_denominateur", None) for req in data_query.values())
-            if v is not None
-        }
-        selected_columns = set(vars_by | vars_variable | vars_variable_num | vars_variable_denom)
-
-        # Sous-échantillon propre du LazyFrame
-        if not selected_columns:
-            filtered_lazy = (
-                data_lazy.with_columns(pl.lit(1).alias("__dummy"))
-                .select("__dummy")
-                .collect()
-                .lazy()
-            )
-
-        else:
-            filtered_lazy = data_lazy.select(selected_columns).collect().lazy()
-
-        with ui.Progress(min=0, max=len(data_query)) as p:
+        with ui.Progress(min=0, max=len(req_pipeline.dict_query)) as p:
             p.set(0, message="Traitement en cours...", detail="Analyse requête par requête...")
+            resultats = req_pipeline.execute_dp(input.budget_total(), get_poids_req(), progress=p)
 
-            context_param = {
-                    "data": filtered_lazy,
-                    "privacy_unit": dp.unit_of(contributions=contrib_individu),
-                    "margins": [dp.polars.Margin(max_partition_length=borne_max_taille_dataset)],
-                }
-
-            context_rho, context_eps = create_context(
-                context_param, input.budget_total(), data_query
-            )
-
-            calculer_toutes_les_requetes(
-                context_rho, context_eps, keys, data_query, resultats_df, p
-            )
-
-        optimisation_et_assemblage_results(resultats_df(), requetes(), data_query, keys)
-
+        resultats_df.set(resultats)
         return afficher_resultats(resultats_df, requetes())
 
     # ----------------------------------------------------------------------------------------------

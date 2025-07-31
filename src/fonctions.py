@@ -16,6 +16,7 @@ from functools import reduce
 import cvxpy as cp
 from shiny import ui
 from typing import Optional, Any, Sequence, Union
+import time
 
 # Map des opérateurs Python vers leurs fonctions correspondantes
 OPS = {
@@ -491,7 +492,7 @@ def calcul_MCG(results_store, modalite, dict_query, type_req, pos=True):
         contraintes.append(R @ beta == 0)
 
     prob = cp.Problem(objective, contraintes)
-    prob.solve()
+    prob.solve(max_iter=100000)
 
     if prob.status not in ["optimal", "optimal_inaccurate"]:
         raise RuntimeError("Problème d'optimisation non résolu")
@@ -502,7 +503,7 @@ def calcul_MCG(results_store, modalite, dict_query, type_req, pos=True):
     X_df_infos[type_req + "_MCG"] = X @ beta_val
 
     # Mise à jour results_store
-    print(X_df_infos)
+    # print(X_df_infos)
     results_modif = mettre_a_jour_results_store(X_df_infos, dict_query, results_store, col_source=type_req + "_MCG", col_cible=type_req)
     return results_modif
 
@@ -740,9 +741,15 @@ def get_weights(request: dict[str, dict[str, Any]], dict_values: dict[str, str])
 
 
 def load_data(path: str, storage_options: Optional[dict[str, str]] = None) -> pl.LazyFrame:
+    start = time.time()
     read_kwargs = {"storage_options": storage_options} if path.startswith("s3://") else {}
     lf = pl.read_parquet(path, **read_kwargs).lazy()
-    return lf.drop("geometry") if "geometry" in lf.collect_schema() else lf
+
+    if "geometry" in lf.collect_schema():
+        lf = lf.drop("geometry")
+
+    print(f"✅ Lecture terminée en {time.time() - start:.2f} secondes.")
+    return lf
 
 
 def extract_column_names_from_choices(choices: dict) -> list[str]:

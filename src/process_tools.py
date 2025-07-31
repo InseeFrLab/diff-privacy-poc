@@ -341,11 +341,7 @@ def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dict_quer
 
         current_results[key] = df_result.to_pandas()
 
-    if hasattr(results_store, "set"):
-        results_store.set(current_results)
-    else:
-        # Cas standard Python
-        results_store.update(current_results)
+    results_store.update(current_results)
 
 
 def optimisation_et_assemblage_results(results_store, requetes, data_query, modalite):
@@ -512,8 +508,4 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
 
         final_results[key] = df_result
 
-    if hasattr(results_store, "set"):
-        results_store.set(final_results)
-    else:
-        # Cas standard Python
-        results_store.update(final_results)
+    results_store.update(final_results)
