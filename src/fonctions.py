@@ -1,4 +1,3 @@
-import re
 import numpy as np
 import polars as pl
 import pandas as pd
@@ -16,17 +15,8 @@ from functools import reduce
 import cvxpy as cp
 from shiny import ui
 from typing import Optional, Any, Sequence, Union
+from src.request_class import Sum, Mean, Ratio, Quantile
 import time
-
-# Map des opérateurs Python vers leurs fonctions correspondantes
-OPS = {
-    "==": operator.eq,
-    "!=": operator.ne,
-    ">=": operator.ge,
-    "<=": operator.le,
-    ">": operator.gt,
-    "<": operator.lt,
-}
 
 
 def optimisation_chaine(
@@ -423,6 +413,7 @@ def mettre_a_jour_results_store(x_df_info, data_query, results_store, col_source
     results_modif = {}
 
     for key, df_valeurs in results_store.items():
+
         groupement = data_query[key].groupement
         masque = x_df_info["requête"] == groupement
         if not masque.any():
@@ -449,23 +440,15 @@ def mettre_a_jour_results_store(x_df_info, data_query, results_store, col_source
 def calcul_MCG(results_store, modalite, dict_query, type_req, pos=True):
     """
     Calcule les coefficients beta via MCG et met à jour results_store.
-
-    Args:
-        results_store : dict de DataFrames des résultats initiaux.
-        modalite : dict des modalités.
-        dict_query : dict des requêtes avec infos.
-        type_req : nom de la colonne cible à mettre à jour dans results_store.
-        pos : bool, impose beta >= 0 si True.
-
-    Returns:
-        dict de DataFrames mis à jour.
+    Version adaptée à Polars.
     """
     liste_requests = [d.groupement for d in dict_query.values()]
-
     if len(liste_requests) == 0:
         return None
 
     X, R, X_df_infos = MCG(liste_requests, modalite)
+
+    # Polars compatible version of ajouter_colonne_value
     X_df_infos = ajouter_colonne_value(X_df_infos, dict_query, results_store)
 
     if len(liste_requests) == 1:
@@ -504,7 +487,10 @@ def calcul_MCG(results_store, modalite, dict_query, type_req, pos=True):
 
     # Mise à jour results_store
     # print(X_df_infos)
-    results_modif = mettre_a_jour_results_store(X_df_infos, dict_query, results_store, col_source=type_req + "_MCG", col_cible=type_req)
+    results_modif = mettre_a_jour_results_store(
+        X_df_infos, dict_query, results_store,
+        col_source=f"{type_req}_MCG", col_cible=type_req
+    )
     return results_modif
 
 
@@ -557,8 +543,8 @@ def create_context(
 ) -> tuple[Union[dp.Context, None], Union[dp.Context, None]]:
 
     # Séparer les poids selon le type de requête
-    poids_rho = [req.poids for req in requete.values() if req.__class__.__name__ != "Quantile"]
-    poids_eps = [req.poids for req in requete.values() if req.__class__.__name__ == "Quantile"]
+    poids_rho = [req.poids for req in requete.values() if not isinstance(req, Quantile) ]
+    poids_eps = [req.poids for req in requete.values() if isinstance(req, Quantile)]
 
     somme_rho = sum(poids_rho)
     somme_eps = sum(poids_eps)
@@ -622,59 +608,6 @@ def eps_from_rho_delta(rho: float, delta: float) -> float:
         return epsilon_base
 
 
-def parse_single_condition(condition: str) -> pl.Expr:
-    """Transforme une condition string comme 'age > 18' en pl.Expr."""
-    for op_str, op_func in OPS.items():
-        if op_str in condition:
-            left, right = condition.split(op_str, 1)
-            left = left.strip()
-            right = right.strip()
-            # Gère les chaînes entre guillemets simples ou doubles
-            if re.match(r"^['\"].*['\"]$", right):
-                right = right[1:-1]
-            elif re.match(r"^\d+(\.\d+)?$", right):  # nombre
-                right = float(right) if '.' in right else int(right)
-            return op_func(pl.col(left), right)
-    raise ValueError(f"Condition invalide : {condition}")
-
-
-def parse_filter_string(filter_str: str, columns: Optional[list[str]] = None) -> pl.Expr:
-    """Transforme une chaîne de filtres combinés en une unique pl.Expr.
-    Si `columns` est fourni, vérifie que les colonnes mentionnées existent."""
-    tokens = re.split(r'(\s+\&\s+|\s+\|\s+)', filter_str)
-    exprs = []
-    ops = []
-
-    for token in tokens:
-        token = token.strip()
-        if token == "&":
-            ops.append("&")
-        elif token == "|":
-            ops.append("|")
-        elif token:
-            # Avant d'appeler parse_single_condition, on vérifie le nom de la colonne
-            for op_str in OPS:
-                if op_str in token:
-                    left, _ = token.split(op_str, 1)
-                    col = left.strip()
-                    if columns is not None and col not in columns:
-                        raise ValueError(f"Colonne inconnue dans le filtre : '{col}'")
-                    break
-            exprs.append(parse_single_condition(token))
-
-    if not exprs:
-        raise ValueError("Le filtre est vide ou mal formé")
-
-    expr = exprs[0]
-    for op, next_expr in zip(ops, exprs[1:]):
-        if op == "&":
-            expr = expr & next_expr
-        elif op == "|":
-            expr = expr | next_expr
-
-    return expr
-
-
 def manual_quantile_score(
     data: Sequence[float], candidats: Sequence[float], alpha: float, et_si: bool = False
 ) -> tuple[np.ndarray, int]:
@@ -727,14 +660,13 @@ def get_weights(request: dict[str, dict[str, Any]], dict_values: dict[str, str])
 
     # Étape 3 : ajustement selon le type de requête
     adjustment_factors = {
-        "Moyenne": 2,
-        "Total": 2,
-        "Ratio": 3,
+        Mean: 2,
+        Sum: 2,
+        Ratio: 3,
     }
 
     for k, v in weights.items():
-        req_type = request[k].__class__.__name__
-        factor = adjustment_factors.get(req_type, 1)
+        factor = adjustment_factors.get(type(request[k]), 1)
         weights[k] = v / factor
 
     return weights

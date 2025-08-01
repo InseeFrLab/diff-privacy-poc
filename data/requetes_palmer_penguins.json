@@ -1,22 +1,22 @@
 {
   "req_1": {
-    "type": "Comptage"
+    "type": "Count"
   },
   "req_2": {
-    "type": "Comptage",
+    "type": "Count",
     "by": [
       "species"
     ]
   },
   "req_3": {
-    "type": "Comptage",
+    "type": "Count",
     "by": [
       "island",
       "species"
     ]
   },
   "req_4": {
-    "type": "Comptage",
+    "type": "Count",
     "by": [
       "island",
       "sex",
@@ -24,33 +24,33 @@
     ]
   },
   "req_5": {
-    "type": "Comptage",
+    "type": "Count",
     "by": [
       "island",
       "sex"
     ]
   },
   "req_6": {
-    "type": "Comptage",
+    "type": "Count",
     "by": [
       "sex"
     ]
   },
   "req_7": {
-    "type": "Comptage",
+    "type": "Count",
     "by": [
       "island"
     ]
   },
   "req_8": {
-    "type": "Comptage",
+    "type": "Count",
     "by": [
       "sex",
       "species"
     ]
   },
   "req_9": {
-    "type": "Total",
+    "type": "Sum",
     "variable": "body_mass_g",
     "bounds": [
       2700.0,
@@ -58,7 +58,7 @@
     ]
   },
   "req_10": {
-    "type": "Total",
+    "type": "Sum",
     "variable": "body_mass_g",
     "bounds": [
       2700.0,
@@ -69,7 +69,7 @@
     ]
   },
   "req_11": {
-    "type": "Total",
+    "type": "Sum",
     "variable": "body_mass_g",
     "bounds": [
       2700.0,
@@ -81,7 +81,7 @@
     ]
   },
   "req_12": {
-    "type": "Total",
+    "type": "Sum",
     "variable": "body_mass_g",
     "bounds": [
       2700.0,
@@ -94,7 +94,7 @@
     ]
   },
   "req_13": {
-    "type": "Total",
+    "type": "Sum",
     "variable": "body_mass_g",
     "bounds": [
       2700.0,
@@ -106,7 +106,7 @@
     ]
   },
   "req_14": {
-    "type": "Total",
+    "type": "Sum",
     "variable": "body_mass_g",
     "bounds": [
       2700.0,
@@ -117,7 +117,7 @@
     ]
   },
   "req_15": {
-    "type": "Total",
+    "type": "Sum",
     "variable": "body_mass_g",
     "bounds": [
       2700.0,
@@ -129,7 +129,7 @@
     ]
   },
   "req_16": {
-    "type": "Total",
+    "type": "Sum",
     "variable": "body_mass_g",
     "bounds": [
       2700.0,
@@ -140,7 +140,7 @@
     ]
   },
   "req_17": {
-    "type": "Moyenne",
+    "type": "Mean",
     "variable": "body_mass_g",
     "bounds": [
       2700.0,
@@ -148,7 +148,7 @@
     ]
   },
   "req_18": {
-    "type": "Moyenne",
+    "type": "Mean",
     "variable": "body_mass_g",
     "bounds": [
       2700.0,
@@ -159,7 +159,7 @@
     ]
   },
   "req_19": {
-    "type": "Moyenne",
+    "type": "Mean",
     "variable": "body_mass_g",
     "bounds": [
       2700.0,
@@ -171,7 +171,7 @@
     ]
   },
   "req_20": {
-    "type": "Moyenne",
+    "type": "Mean",
     "variable": "body_mass_g",
     "bounds": [
       2700.0,
@@ -184,7 +184,7 @@
     ]
   },
   "req_21": {
-    "type": "Moyenne",
+    "type": "Mean",
     "variable": "body_mass_g",
     "bounds": [
       2700.0,
@@ -196,7 +196,7 @@
     ]
   },
   "req_22": {
-    "type": "Moyenne",
+    "type": "Mean",
     "variable": "body_mass_g",
     "bounds": [
       2700.0,
@@ -207,7 +207,7 @@
     ]
   },
   "req_23": {
-    "type": "Moyenne",
+    "type": "Mean",
     "variable": "body_mass_g",
     "bounds": [
       2700.0,

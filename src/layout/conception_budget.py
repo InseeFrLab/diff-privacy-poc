@@ -1,7 +1,8 @@
 from shiny import ui, module
 from src.constant import (
-    regions_france, name_dataset
+    regions_france, name_dataset, priorite
 )
+from src.request_class import Query
 from htmltools import TagList, tags, HTMLDependency
 
 bootstrap_icons_dep = HTMLDependency(
@@ -51,12 +52,12 @@ def bloc_budget_ui():
     return ui.output_ui("bloc_budget")
 
 
-def make_radio_buttons(request, filter_type: str, dict_results):
+def make_radio_buttons(request, type_req: Query, dict_results):
+
     radio_buttons = []
-    priorite = {"Comptage": "2", "Total": "2", "Moyenne": "1", "Ratio": "1", "Quantile": "3"}
 
     for key, req in request.items():
-        if req.__class__.__name__ == filter_type:
+        if isinstance(req, type_req):
             radio_buttons_id = key
 
             # Contenu du tableau en HTML
@@ -73,7 +74,7 @@ def make_radio_buttons(request, filter_type: str, dict_results):
                 }}
                 </style>
                 <div style='max-height: 250px; overflow-y: auto; max-width: 500px; margin-top: 10px;'>
-                    {resultat.to_html(
+                    {resultat.to_pandas().to_html(
                         classes="table table-striped table-hover table-sm text-center align-middle",
                         border=0,
                         index=False
@@ -98,7 +99,7 @@ def make_radio_buttons(request, filter_type: str, dict_results):
                     radio_buttons_id,
                     label=title_with_popover,
                     choices={"1": 1, "2": 2, "3": 3},
-                    selected=priorite[req.__class__.__name__],
+                    selected=priorite[type(req)],
                     inline=True
                 )
             )

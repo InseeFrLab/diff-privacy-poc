@@ -10,6 +10,7 @@ from src.fonctions import (
     optimisation_chaine,
     create_context, intervalle_confiance_quantile
 )
+from src.request_class import Count, Sum, Quantile, Query
 import numpy as np
 import time
 dp.enable_features("contrib")
@@ -17,8 +18,11 @@ dp.enable_features("contrib")
 
 class Pipeline():
     def __init__(
-        self, dict_req, lf: pl.DataFrame,
-        contribution_individu_max: int = 1, borne_max_taille_dataset: int = 1
+        self,
+        dict_req: dict[str, Query],
+        lf: pl.LazyFrame,
+        contribution_individu_max: int = 1,
+        borne_max_taille_dataset: int = 1
     ):
         self.dict_req = dict_req
         self.lf = lf
@@ -37,7 +41,7 @@ class Pipeline():
         i = 1
 
         for (key, request) in data_requetes.items():
-            if request.__class__.__name__ not in ["Comptage", "Quantile"]:
+            if not isinstance(request, (Count, Quantile)):
                 tuple_request = request.transformation()
             else:
                 tuple_request = (request,)
@@ -54,48 +58,30 @@ class Pipeline():
                     id_cle = next(k for k, v in self.dict_query.items() if v == sous_req)
                     self.dict_query[id_cle].id_req.append(key)
 
-    def execute(self, use_bounds=False, afficher=True):
+    def execute(
+        self,
+        use_bounds: bool = False
+    ) -> dict[str, pl.DataFrame]:
         print("==> Début execute")
         start_global = time.time()
         dict_resultat = {}
 
         for key, request in self.dict_req.items():
 
-            resultat = request.execute(df=self.lf, use_bounds=use_bounds).to_pandas()
+            resultat = request.execute(lf=self.lf, use_bounds=use_bounds)
             dict_resultat[key] = resultat
 
-            if afficher:
-                print(resultat)
-
         total_duration = time.time() - start_global
         print(f"<== Fin execute (temps total : {total_duration:.2f} secondes)")
         return dict_resultat
 
-    def execute(self, use_bounds=False, afficher=True):
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        print("==> Début execute (parallélisé)")
-        start_global = time.time()
-        dict_resultat = {}
-
-        def run_request(key, request):
-            result = request.execute(df=self.lf, use_bounds=use_bounds).to_pandas()
-            return key, result
-
-        with ThreadPoolExecutor() as executor:
-            futures = [executor.submit(run_request, key, request)
-                for key, request in self.dict_req.items()]
-
-            for future in as_completed(futures):
-                key, result = future.result()
-                dict_resultat[key] = result
-                if afficher:
-                    print(result)
-
-        total_duration = time.time() - start_global
-        print(f"<== Fin execute (temps total : {total_duration:.2f} secondes)")
-        return dict_resultat
-
-    def execute_dp(self, budget_global, dict_poids, optim_MCG: bool = True, progress: bool = False):
+    def execute_dp(
+        self,
+        budget_global: float,
+        dict_poids: dict[str, float],
+        optim_MCG: bool = True,
+        progress: bool = False
+    ) -> dict[str, pl.DataFrame]:
         print("==> Début execute_dp")
         start_global = time.time()
 
@@ -144,30 +130,32 @@ class Pipeline():
         duration = time.time() - start_context
         print(f"✅ Context terminée en {duration:.2f} secondes.")
 
-        resultats_df = {}
-
-        calculer_toutes_les_requetes(
-            context_rho, context_eps, self.key_values, data_query, resultats_df, progress
+        resultats_df = calculer_toutes_les_requetes(
+            context_rho, context_eps, self.key_values, data_query, progress
         )
 
-        optimisation_et_assemblage_results(resultats_df, self.dict_req, data_query, self.key_values)
+        resultats_df = optimisation_et_assemblage_results(resultats_df, self.dict_req, data_query, self.key_values)
         total_duration = time.time() - start_global
         print(f"<== Fin execute_dp (temps total : {total_duration:.2f} secondes)")
         return resultats_df
 
-    def precision_dp(self, budget_global, dict_poids):
+    def precision_dp(
+        self,
+        budget_global: float,
+        dict_poids: dict[str, float]
+    ):
         print("==> Début precision_dp")
         start_global = time.time()
 
         data_query = self._query_pondere(budget_global=budget_global, dict_poids=dict_poids)
 
-        query_comptage = {k: v for k, v in data_query.items() if v.__class__.__name__ == "Comptage"}
+        query_comptage = {k: v for k, v in data_query.items() if isinstance(v, Count)}
         query_comptage = optimisation_chaine(query_comptage, self.key_values, budget_global)
 
-        query_total = {k: v for k, v in data_query.items() if v.__class__.__name__ == "Total"}
+        query_total = {k: v for k, v in data_query.items() if isinstance(v, Sum)}
         query_total = optimisation_chaine(query_total, self.key_values, budget_global)
 
-        query_quantile = {k: v for k, v in data_query.items() if v.__class__.__name__ == "Quantile"}
+        query_quantile = {k: v for k, v in data_query.items() if isinstance(v, Quantile)}
         filtres_uniques = set(query.filtre for query in query_quantile.values())
         variables_uniques = set(query.variable for query in query_quantile.values())
 
@@ -197,7 +185,12 @@ class Pipeline():
         print(f"<== Fin precision_dp (temps total : {total_duration:.2f} secondes)")
         return results
 
-    def precision_opendp(self, budget_global, dict_poids, alpha=0.05, afficher=True):
+    def precision_opendp(
+        self,
+        budget_global: float,
+        dict_poids: dict[str, float],
+        alpha: float = 0.05
+    ):
         dict_resultat = {}
 
         context_param = {
@@ -218,9 +211,7 @@ class Pipeline():
 
         for key, request in data_requetes.items():
 
-            type_req = request.__class__.__name__
-
-            if type_req == "Quantile":
+            if isinstance(request, Quantile):
                 context_use = context_eps
             else:
                 context_use = context_rho
@@ -230,14 +221,16 @@ class Pipeline():
             )
             dict_resultat[key] = resultat
 
-            if afficher:
-                print(resultat)
         return dict_resultat
 
-    def _query_pondere(self, budget_global, dict_poids) -> dict[str, dict[str, Any]]:
+    def _query_pondere(
+        self,
+        budget_global: float,
+        dict_poids: dict[str, float]
+    ) -> dict[str, dict[str, Any]]:
         for request in self.dict_query.values():
             request.poids = sum(dict_poids.get(r, 0) for r in request.id_req)
 
-            if request.__class__.__name__ in ["Comptage", "Total"]:
+            if isinstance(request, (Count, Sum)):
                 request.precision_dp(budget_global)
         return self.dict_query

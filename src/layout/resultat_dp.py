@@ -28,7 +28,7 @@ def afficher_resultats(results_store, requetes):
 
         result_card = ui.card(
             ui.card_header("Résultats après application de la DP"),
-            ui.HTML(df_result.to_html(
+            ui.HTML(df_result.to_pandas().to_html(
                 classes="table table-striped table-hover table-sm text-center align-middle",
                 border=0,
                 index=False

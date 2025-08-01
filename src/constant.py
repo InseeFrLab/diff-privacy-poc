@@ -1,3 +1,4 @@
+from src.request_class import Query, Count, Sum, Mean, Ratio, Quantile
 import os
 
 # Stockage des options S3 (MinIO)
@@ -39,7 +40,7 @@ regions_france: list[str] = [
     "Nouvelle-Aquitaine",
     "Occitanie",
     "Pays de la Loire",
-    "Provence-Alpes-Côte d’Azur",
+    "Provence-Alpes-Côte d'Azur",
     "Guadeloupe",
     "Martinique",
     "Guyane",
@@ -72,6 +73,14 @@ radio_to_weight: dict[int, float] = {
     1: 1.0,
     2: 0.5,
     3: 0.25
+}
+
+priorite: dict[Query, float] = {
+    Count: "2",
+    Sum: "2",
+    Mean: "1",
+    Ratio: "1",
+    Quantile: "3"
 }
 
 # Contribution d’un individu dans une agrégation

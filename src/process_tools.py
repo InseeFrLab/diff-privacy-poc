@@ -6,12 +6,14 @@ from src.constant import (
 from src.fonctions import (
     calcul_MCG
 )
+from src.request_class import Count, Sum, Mean, Quantile, Ratio
+import polars as pl
 
 
 def df_comptage(requetes, conception_query_count) -> pd.DataFrame:
     query_comptage = conception_query_count
     data_requetes = requetes
-    req_comptage = {k: v for k, v in data_requetes.items() if v.__class__.__name__ == "Comptage"}
+    req_comptage = {k: v for k, v in data_requetes.items() if isinstance(v, Count)}
     results = []
     for query in query_comptage.values():
 
@@ -21,19 +23,19 @@ def df_comptage(requetes, conception_query_count) -> pd.DataFrame:
 
                 results.append({
                     "requête": req,
-                    "groupement": query.groupement_style,
+                    "groupement": str(query.groupement_style),
                     "filtre": query.filtre,
                     "écart type estimation": query.scale,
                     "écart type bruit": np.sqrt(query.sigma2)
                 })
-    return pd.DataFrame(results).dropna(axis=1, how="all").round(1)
+    return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
 
 
 def df_total(dataset, requetes, conception_query_count, conception_query_sum) -> pd.DataFrame:
     query_comptage = conception_query_count
     query_total = conception_query_sum
     data_requetes = requetes
-    req_total = {k: v for k, v in data_requetes.items() if v.__class__.__name__ == "Total"}
+    req_total = {k: v for k, v in data_requetes.items() if isinstance(v, Sum)}
 
     results = []
 
@@ -61,8 +63,6 @@ def df_total(dataset, requetes, conception_query_count, conception_query_sum) ->
 
                 scale = np.sqrt(var_comptage + scale_total_centre**2)
 
-                label = f"{req.variable}<br>groupement: {query.groupement_style}"
-
                 resultat = req.execute(dataset, use_bounds=True)
                 resultat_non_biaise = req.execute(dataset, use_bounds=False)
 
@@ -84,9 +84,8 @@ def df_total(dataset, requetes, conception_query_count, conception_query_sum) ->
 
                 results.append({
                     "requête": key,
-                    "label": label,
                     "variable": req.variable,
-                    "groupement": query.groupement_style,
+                    "groupement": str(query.groupement_style),
                     "filtre": query.filtre,
                     "cv moyen (%)": cv_moyen,
                     "biais relatif moyen (%)": biais_relatif_moyen,
@@ -99,14 +98,14 @@ def df_total(dataset, requetes, conception_query_count, conception_query_sum) ->
                 })
 
                 break
-    return pd.DataFrame(results).dropna(axis=1, how="all").round(1)
+    return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
 
 
 def df_moyenne(dataset, requetes, conception_query_count, conception_query_sum):
     query_comptage = conception_query_count
     query_total = conception_query_sum
     data_requetes = requetes
-    req_moyenne = {k: v for k, v in data_requetes.items() if v.__class__.__name__ == "Moyenne"}
+    req_moyenne = {k: v for k, v in data_requetes.items() if isinstance(v, Mean)}
 
     results = []
 
@@ -132,8 +131,6 @@ def df_moyenne(dataset, requetes, conception_query_count, conception_query_sum):
                 var_comptage = (scale_comptage * m)**2
 
                 scale_total = np.sqrt(var_comptage + scale_total_centre**2)
-
-                label = f"{req.variable}<br>groupement: {query.groupement_style}"
 
                 resultat = req.execute(dataset, use_bounds=True)
                 resultat_non_biaise = req.execute(dataset, use_bounds=False)
@@ -163,9 +160,8 @@ def df_moyenne(dataset, requetes, conception_query_count, conception_query_sum):
 
                 results.append({
                     "requête": key,
-                    "label": label,
                     "variable": req.variable,
-                    "groupement": query.groupement_style,
+                    "groupement": str(query.groupement_style),
                     "filtre": query.filtre,
                     "cv moyen (%)": cv_moyen,
                     "biais relatif moyen (%)": biais_relatif_moyen,
@@ -179,14 +175,14 @@ def df_moyenne(dataset, requetes, conception_query_count, conception_query_sum):
 
                 break
 
-    return pd.DataFrame(results).dropna(axis=1, how="all").round(1)
+    return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
 
 
 def df_ratio(dataset, requetes, conception_query_count, conception_query_sum):
     query_comptage = conception_query_count
     query_total = conception_query_sum
     data_requetes = requetes
-    req_ratio = {k: v for k, v in data_requetes.items() if v.__class__.__name__ == "Ratio"}
+    req_ratio = {k: v for k, v in data_requetes.items() if isinstance(v, Ratio)}
 
     results = []
 
@@ -233,8 +229,6 @@ def df_ratio(dataset, requetes, conception_query_count, conception_query_sum):
 
                 scale_total_denom = np.sqrt(var_denom_comptage + scale_total_denom_centre**2)
 
-                label = f"{variable_num}<br>sur {variable_denom}<br>groupement: {query.groupement_style}"
-
                 resultat = req.execute(dataset, use_bounds=True)
                 resultat_non_biaise = req.execute(dataset, use_bounds=False)
 
@@ -264,10 +258,9 @@ def df_ratio(dataset, requetes, conception_query_count, conception_query_sum):
 
                 results.append({
                     "requête": key,
-                    "label": label,
                     "variable numérateur": variable_num,
                     "variable dénominateur": variable_denom,
-                    "groupement": query.groupement_style,
+                    "groupement": str(query.groupement_style),
                     "filtre": query.filtre,
                     "cv moyen (%)": cv_moyen,
                     "biais relatif moyen (%)": biais_relatif_moyen,
@@ -284,7 +277,7 @@ def df_ratio(dataset, requetes, conception_query_count, conception_query_sum):
 
                 break
 
-    return pd.DataFrame(results).dropna(axis=1, how="all").round(1)
+    return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
 
 
 def df_quantile(conception_query_quantile) -> pd.DataFrame:
@@ -292,35 +285,31 @@ def df_quantile(conception_query_quantile) -> pd.DataFrame:
 
     results = []
     for query in query_quantile.values():
-        variable = query.variable
-        label = f"{variable}<br>groupement: {query.groupement_style}"
 
         for quantile_key, taille_ic in query.scale.items():
             alpha = float(quantile_key.removeprefix("quantile_"))
 
             results.append({
                 "requête": query.id_req[0],
-                "label": label,
+                "variable": query.variable,
                 "quantile": choix_quantile[alpha],
-                "groupement": query.groupement_style,
+                "groupement": str(query.groupement_style),
                 "filtre": query.filtre,
                 "taille moyenne IC 95%": taille_ic,
             })
 
-    return pd.DataFrame(results).dropna(axis=1, how="all").round(1)
+    return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
 
 
-def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dict_query, results_store, progress=None):
+def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dict_query, progress=None):
     current_results = {}
 
     for i, (key, query) in enumerate(dict_query.items(), start=1):
 
-        type_req = query.__class__.__name__
-
         if progress:
-            progress.set(i, message=f"Requête {key} — {type_req}", detail="Calcul en cours...")
+            progress.set(i, message=f"Requête {key} — {type(query)}", detail="Calcul en cours...")
 
-        if type_req == "Quantile":
+        if isinstance(query, Quantile):
             context_use = context_eps
         else:
             context_use = context_rho
@@ -341,7 +330,7 @@ def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dict_quer
 
         current_results[key] = df_result.to_pandas()
 
-    results_store.update(current_results)
+    return current_results
 
 
 def optimisation_et_assemblage_results(results_store, requetes, data_query, modalite):
@@ -349,21 +338,18 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
     final_results = {}
     intermed_results = {}
 
-    query_comptage = {k: v for k, v in data_query.items() if v.__class__.__name__ == "Comptage"}
+    # Traitement Count
+    query_comptage = {k: v for k, v in data_query.items() if isinstance(v, Count)}
     filtres_uniques = set(query.filtre for query in query_comptage.values())
 
     for filtre in filtres_uniques:
-        query_filtre = {
-            k: v for k, v in query_comptage.items()
-            if v.filtre == filtre
-        }
-
-        results_filtre = {k: v for k, v in current_results.items() if k in query_filtre.keys()}
+        query_filtre = {k: v for k, v in query_comptage.items() if v.filtre == filtre}
+        results_filtre = {k: v for k, v in current_results.items() if k in query_filtre}
         results_filtre = calcul_MCG(results_filtre, modalite, query_comptage, "count")
-
         intermed_results.update(results_filtre)
 
-    query_total = {k: v for k, v in data_query.items() if v.__class__.__name__ == "Total"}
+    # Traitement Sum
+    query_total = {k: v for k, v in data_query.items() if isinstance(v, Sum)}
     filtres_uniques = set(query.filtre for query in query_total.values())
     variables_uniques = set(getattr(query, "variable", None) for query in query_total.values())
 
@@ -373,21 +359,14 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
                 k: v for k, v in query_total.items()
                 if getattr(v, "variable", None) == variable and v.filtre == filtre
             }
-            results_filtre = {k: v for k, v in current_results.items() if k in query_filtre_variable.keys()}
+            results_filtre = {k: v for k, v in current_results.items() if k in query_filtre_variable}
             results_filtre = calcul_MCG(results_filtre, modalite, query_filtre_variable, "sum", pos=False)
             intermed_results.update(results_filtre)
 
     for key, req in requetes.items():
-
-        if req.__class__.__name__ == "Total":
-            key_query_comptage = next(
-                (k for k, v in data_query.items() if key in v.id_req and v.__class__.__name__ == "Comptage"),
-                None  # valeur par défaut si rien n'est trouvé
-            )
-            key_query_total = next(
-                (k for k, v in data_query.items() if key in v.id_req and v.__class__.__name__ == "Total"),
-                None
-            )
+        if isinstance(req, Sum):
+            key_query_comptage = next((k for k, v in data_query.items() if key in v.id_req and isinstance(v, Count)), None)
+            key_query_total = next((k for k, v in data_query.items() if key in v.id_req and isinstance(v, Sum)), None)
             L, U = req.bounds
             m = (U + L) / 2
 
@@ -400,19 +379,18 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
                 df_result_comptage.reset_index(drop=True)],
                 axis=1
             )
-
             # Supprimer les colonnes en doublon éventuelles
             df_result = df_result.loc[:, ~df_result.columns.duplicated()]
 
             df_result["sum"] = df_result["sum"] + df_result["count"] * m
 
-        elif req.__class__.__name__ == "Moyenne":
+        elif isinstance(req, Mean):
             key_query_comptage = next(
-                (k for k, v in data_query.items() if key in v.id_req and v.__class__.__name__ == "Comptage"),
-                None  # valeur par défaut si rien n'est trouvé
+                (k for k, v in data_query.items() if key in v.id_req and isinstance(v, Count)),
+                None
             )
             key_query_total = next(
-                (k for k, v in data_query.items() if key in v.id_req and v.__class__.__name__ == "Total"),
+                (k for k, v in data_query.items() if key in v.id_req and isinstance(v, Sum)),
                 None
             )
             L, U = req.bounds
@@ -439,26 +417,27 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
                 axis=1
             )
 
-        elif req.__class__.__name__ == "Ratio":
+        elif isinstance(req, Ratio):
             key_query_comptage = next(
-                (k for k, v in data_query.items() if key in v.id_req and v.__class__.__name__ == "Comptage"),
-                None  # valeur par défaut si rien n'est trouvé
+                (k for k, v in data_query.items() if key in v.id_req and isinstance(v, Count)),
+                None
             )
             variable_num = req.variable_numerateur
             variable_denom = req.variable_denominateur
 
             L, U = req.bounds_numerateur
             m_num = (U + L) / 2
-
             L, U = req.bounds_denominateur
             m_denom = (U + L) / 2
 
             key_query_total_num = next(
-                (k for k, v in data_query.items() if key in v.id_req and v.__class__.__name__ == "Total" and v.variable == variable_num),
+                (k for k, v in data_query.items()
+                if key in v.id_req and isinstance(v, Sum) and v.variable == variable_num),
                 None
             )
             key_query_total_denom = next(
-                (k for k, v in data_query.items() if key in v.id_req and v.__class__.__name__ == "Total" and v.variable == variable_denom),
+                (k for k, v in data_query.items()
+                if key in v.id_req and isinstance(v, Sum) and v.variable == variable_denom),
                 None
             )
 
@@ -491,10 +470,10 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
         else:
             key_query = next((k for k, v in data_query.items() if key in v.id_req), None)
 
-            if req.__class__.__name__ == "Comptage":
+            if isinstance(req, Count):
                 df_result = intermed_results[key_query]
 
-            if req.__class__.__name__ == "Quantile":
+            if isinstance(req, Quantile):
                 df_result = current_results[key_query]
 
         df_result = df_result.round(1)
@@ -506,6 +485,6 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
         if "count" in df_result.columns:
             df_result["count"] = df_result["count"].clip(lower=0)
 
-        final_results[key] = df_result
-
-    results_store.update(final_results)
+        final_results[key] = pl.from_pandas(df_result)
+    
+    return final_results

@@ -12,8 +12,8 @@ from src.layout.conception_budget import page_conception_budget, make_radio_butt
 from src.layout.resultat_dp import page_resultat_dp, afficher_resultats
 from src.layout.etat_budget_dataset import page_etat_budget_dataset
 from src.fonctions import (
-    eps_from_rho_delta, parse_filter_string,
-    get_weights, load_data, manual_quantile_score, 
+    eps_from_rho_delta,
+    get_weights, load_data, manual_quantile_score,
     extract_column_names_from_choices,
     extract_bounds,
     load_yaml_metadata, assert_or_notify
@@ -46,9 +46,9 @@ from typing import Optional, Union
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import textwrap
-from src.request_class import Comptage, Total, Moyenne, Ratio, Quantile
+from src.request_class import Count, Sum, Mean, Ratio, Quantile, parse_filter_string
 from src.pipeline_class import Pipeline
-import time
+import ast
 dp.enable_features("contrib")
 
 www_dir = Path(__file__).parent / "www"
@@ -56,9 +56,9 @@ www_dir = Path(__file__).parent / "www"
 data_example = sns.load_dataset("penguins").dropna()
 
 type_map = {
-    "Comptage": Comptage,
-    "Total": Total,
-    "Moyenne": Moyenne,
+    "Comptage": Count,
+    "Total": Sum,
+    "Moyenne": Mean,
     "Ratio": Ratio,
     "Quantile": Quantile
 }
@@ -101,13 +101,13 @@ def radio_buttons_server(
     @render.ui
     def radio_buttons() -> ui.TagList:
         return ui.layout_columns(
-            *make_radio_buttons(requetes(), type_req, requetes_pipeline_execute()),
+            *make_radio_buttons(requetes(), type_map[type_req], requetes_pipeline_execute()),
             col_widths=3
         )
 
     def selected_values() -> dict[str, str]:
         data_requetes = requetes()
-        req_type = {k: v for k, v in data_requetes.items() if v.__class__.__name__ == type_req}
+        req_type = {k: v for k, v in data_requetes.items() if isinstance(v, type_map[type_req])}
         if not req_type:
             return {}
         return {key: input[key]() for key in req_type.keys()}
@@ -125,11 +125,15 @@ def bloc_budget_server(
     type_req = session.ns
 
     def bloc_visible() -> bool:
-        return any(req.__class__.__name__ == type_req for req in req_pipeline().dict_req.values())
+        return any(isinstance(req, type_map[type_req]) for req in req_pipeline().dict_req.values())
 
     @reactive.calc
     def dataframe() -> pd.DataFrame:
-        return requetes_pipeline_precision()[type_req]
+        df = requetes_pipeline_precision()[type_req].to_pandas()
+        df["groupement"] = df["groupement"].apply(
+            lambda x: ast.literal_eval(x) if isinstance(x, str) and x.startswith("(") else x
+        )
+        return df
 
     @render.ui
     def bloc_budget() -> ui.TagList:
@@ -149,10 +153,7 @@ def bloc_budget_server(
     @render.data_frame
     def table_req() -> pd.DataFrame:
         df = dataframe()
-        if not df.empty:
-            if type_req != "Comptage":
-                df = df.drop(columns="label")
-            # Définir l'arrondi spécifique
+        if not df.empty and type_req != "Comptage":
             cols = [
                 "cv moyen (%)", "biais relatif moyen (%)",
                 "écart type comptage", "écart type bruit comptage"
@@ -160,7 +161,7 @@ def bloc_budget_server(
 
             arrondi = {col: 1 if col in cols else 0 for col in df.columns}
             df = df.round(arrondi)
-            return df
+        return df
 
     @render_plotly
     def plot_req() -> go.Figure:
@@ -170,9 +171,16 @@ def bloc_budget_server(
         if not df.empty:
             if type_req == "Comptage":
                 ycol = "écart type estimation"
+                textcol = "groupement"
 
             elif type_req == "Quantile":
                 ycol = "taille moyenne IC 95%"
+                textcol = "label"
+                df["label"] = (
+                    df["variable"].astype(str)
+                    + "<br>groupement: "
+                    + df["groupement"].astype(str)
+                )
                 cols_to_group = ["requête", "label", "groupement", "filtre"]
                 existing_cols = [col for col in cols_to_group if col in df.columns]
 
@@ -181,8 +189,24 @@ def bloc_budget_server(
                     df.groupby(existing_cols, dropna=False)["taille moyenne IC 95%"]
                     .mean().reset_index().dropna(axis=1, how="all")
                 )
+            elif type_req == "Ratio":
+                ycol = "cv moyen (%)"
+                textcol = "label"
+                df["label"] = (
+                    df["variable numérateur"].astype(str)
+                    + " / "
+                    + df["variable dénominateur"].astype(str)
+                    + "<br>groupement: "
+                    + df["groupement"].astype(str)
+                )
             else:
                 ycol = "cv moyen (%)"
+                textcol = "label"
+                df["label"] = (
+                    df["variable"].astype(str)
+                    + "<br>groupement: "
+                    + df["groupement"].astype(str)
+                )
             return create_barplot(df, x_col="requête", y_col=ycol, text=textcol, color="groupement")
 
 
@@ -288,7 +312,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     @reactive.calc
     def requetes_pipeline_execute():
-        return requetes_pipeline().execute(afficher=False)
+        return requetes_pipeline().execute()
 
     # Page Préparer ses requêtes
     @reactive.calc
@@ -334,35 +358,6 @@ def server(input: Inputs, output: Outputs, session: Session):
         }
         poids = get_weights(data_requetes, values_buttons)
         return poids
-
-    # Non utilisé pour l'instant
-    @reactive.calc
-    def nb_modalite_var() -> dict[str, list[int]]:
-        """
-        Pour chaque variable dans les requêtes, retourne une liste
-        d'entiers de 0 à (nombre de modalités - 1).
-        Utilise les métadonnées YAML pour récupérer le nombre de modalités uniques par variable.
-        """
-        # data_query = dict_query()
-        metadata_str = yaml_metadata_str()
-        metadata_dict = yaml.safe_load(metadata_str) if metadata_str else {}
-
-        if not metadata_dict or 'columns' not in metadata_dict:
-            return {}
-
-        # Extraire l'ensemble des variables référencées dans les requêtes (clé 'by')
-        variables = {val for v in data_query.values() for val in v.get("by", [])}
-        print(variables)
-
-        nb_modalites = {}
-
-        for var in variables:
-            col_info = metadata_dict['columns'].get(var, {})
-            nb = col_info.get('unique_values')
-            if isinstance(nb, int) and nb > 0:
-                nb_modalites[var] = list(range(nb))
-
-        return nb_modalites
 
     # ----------------------------------------------------------------------------------------------
 
@@ -785,7 +780,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             for key, df in resultats.items():
                 nom_feuille = str(key)[:31]  # Limite Excel : 31 caractères max
-                df.to_excel(writer, sheet_name=nom_feuille, index=False)
+                df.to_pandas().to_excel(writer, sheet_name=nom_feuille, index=False)
 
         buffer.seek(0)
         return buffer
