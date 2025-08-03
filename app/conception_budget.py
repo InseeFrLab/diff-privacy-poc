@@ -1,8 +1,8 @@
 from shiny import ui, module
-from src.constant import (
+from stats_dp.constant import (
     regions_france, name_dataset, priorite
 )
-from src.request_class import Query
+from stats_dp.request_class import Query
 from htmltools import TagList, tags, HTMLDependency
 
 bootstrap_icons_dep = HTMLDependency(

@@ -1,31 +1,3 @@
-from src.plots import (
-    create_histo_plot, create_fc_emp_plot,
-    create_score_plot, create_proba_plot,
-    create_barplot
-)
-from src.layout.introduction_dp import page_introduction_dp
-from src.layout.donnees import page_donnees
-from src.layout.preparer_requetes import (
-    page_preparer_requetes, affichage_requete, affichage_bouton
-)
-from src.layout.conception_budget import page_conception_budget, make_radio_buttons
-from src.layout.resultat_dp import page_resultat_dp, afficher_resultats
-from src.layout.etat_budget_dataset import page_etat_budget_dataset
-from src.fonctions import (
-    eps_from_rho_delta,
-    get_weights, load_data, manual_quantile_score,
-    extract_column_names_from_choices,
-    extract_bounds,
-    load_yaml_metadata, assert_or_notify
-)
-from src.constant import (
-    storage_options,
-    contrib_individu,
-    chemin_dataset,
-    choix_quantile,
-    borne_max_taille_dataset
-)
-
 from shiny import App, ui, render, reactive, module, Inputs, Outputs, Session
 from shinywidgets import render_plotly
 from pathlib import Path
@@ -46,10 +18,41 @@ from typing import Optional, Union
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import textwrap
-from src.request_class import Count, Sum, Mean, Ratio, Quantile, parse_filter_string
-from src.pipeline_class import Pipeline
 import ast
+
+from .introduction_dp import page_introduction_dp
+from .donnees import page_donnees
+from .preparer_requetes import (
+    page_preparer_requetes, affichage_requete, affichage_bouton
+)
+from .conception_budget import page_conception_budget, make_radio_buttons
+from .resultat_dp import page_resultat_dp, afficher_resultats
+from .etat_budget_dataset import page_etat_budget_dataset
+
+from stats_dp.plots import (
+    create_histo_plot, create_fc_emp_plot,
+    create_score_plot, create_proba_plot,
+    create_barplot
+)
+from stats_dp.fonctions import (
+    eps_from_rho_delta,
+    get_weights, load_data, manual_quantile_score,
+    extract_column_names_from_choices,
+    extract_bounds,
+    load_yaml_metadata, assert_or_notify
+)
+from stats_dp.constant import (
+    storage_options,
+    contrib_individu,
+    chemin_dataset,
+    choix_quantile,
+    borne_max_taille_dataset
+)
+from stats_dp.request_class import Count, Sum, Mean, Ratio, Quantile, parse_filter_string
+from stats_dp.pipeline_class import Pipeline
+
 dp.enable_features("contrib")
+
 
 www_dir = Path(__file__).parent / "www"
 
@@ -1076,9 +1079,4 @@ def server(input: Inputs, output: Outputs, session: Session):
 # ----------------------------------------------------------------------------------------------
 # ----------------------------------------------------------------------------------------------
 
-
 app = App(app_ui, server, static_assets=www_dir)
-# shiny run --reload --launch-browser app.py
-# shiny run --autoreload-port 8000 app.py
-
-# shiny run --port 5000 --host 0.0.0.0 app.py

@@ -2,15 +2,15 @@ import polars as pl
 import opendp.prelude as dp
 from typing import Any
 import copy
-from src.process_tools import (
+from stats_dp.process_tools import (
     calculer_toutes_les_requetes, optimisation_et_assemblage_results,
     df_comptage, df_total, df_moyenne, df_ratio, df_quantile
 )
-from src.fonctions import (
+from stats_dp.fonctions import (
     optimisation_chaine,
     create_context, intervalle_confiance_quantile
 )
-from src.request_class import Count, Sum, Quantile, Query
+from stats_dp.request_class import Count, Sum, Quantile, Query
 import numpy as np
 import time
 dp.enable_features("contrib")

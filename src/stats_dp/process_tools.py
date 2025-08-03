@@ -1,12 +1,12 @@
 import numpy as np
 import pandas as pd
-from src.constant import (
+from stats_dp.constant import (
     choix_quantile
 )
-from src.fonctions import (
+from stats_dp.fonctions import (
     calcul_MCG
 )
-from src.request_class import Count, Sum, Mean, Quantile, Ratio
+from stats_dp.request_class import Count, Sum, Mean, Quantile, Ratio
 import polars as pl
 
 
@@ -486,5 +486,5 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
             df_result["count"] = df_result["count"].clip(lower=0)
 
         final_results[key] = pl.from_pandas(df_result)
-    
+
     return final_results

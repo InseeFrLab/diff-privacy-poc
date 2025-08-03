@@ -1,8 +1,8 @@
-from src.fonctions import (
+from stats_dp.fonctions import (
     load_data, load_yaml_metadata,
     save_yaml_metadata_from_dataframe
 )
-from src.constant import (
+from stats_dp.constant import (
     storage_options,
     chemin_dataset
 )
