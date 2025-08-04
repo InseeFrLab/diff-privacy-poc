@@ -96,7 +96,6 @@ def parse_filter_string(
             expr = expr & next_expr
         elif op == "|":
             expr = expr | next_expr
-
     return expr
 
 
@@ -257,7 +256,7 @@ class Query(ABC):
     def filtre_bounds_by(
         self,
         lf: Union[pl.LazyFrame, LazyFrameQuery],
-        *expr,
+        *expr: pl.Expr,
         use_bounds: bool,
         key_values: Optional[dict[str, list[str]]] = None
     ) -> Union[pl.LazyFrame, LazyFrameQuery]:
@@ -317,7 +316,6 @@ class Count(Query):
         expr = (
             pl.count().alias("count")
         )
-        print(type(lf))
         lf = self.filtre_bounds_by(lf, expr, use_bounds=use_bounds)
         return lf.collect()
 

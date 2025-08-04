@@ -6,14 +6,16 @@ from src.stats_dp.constant import (
 from src.stats_dp.fonctions import (
     calcul_MCG
 )
-from src.stats_dp.request_class import Count, Sum, Mean, Quantile, Ratio, Query
+from src.stats_dp.request_class import Count, Sum, Mean, Quantile, Ratio, Query, InfoDataset
+from typing import Optional, Union
 import polars as pl
+from shiny import ui
 
 
 def df_comptage(
     requetes: dict[str, Query],
     query_comptage: dict[str, Count]
-) -> pd.DataFrame:
+) -> pl.DataFrame:
 
     data_requetes = requetes
     req_comptage = {k: v for k, v in data_requetes.items() if isinstance(v, Count)}
@@ -39,7 +41,7 @@ def df_total(
     requetes: dict[str, Query],
     query_comptage: dict[str, Count],
     query_total: dict[str, Sum]
-) -> pd.DataFrame:
+) -> pl.DataFrame:
 
     data_requetes = requetes
     req_total = {k: v for k, v in data_requetes.items() if isinstance(v, Sum)}
@@ -110,10 +112,10 @@ def df_total(
 
 def df_moyenne(
     dataset: pl.LazyFrame,
-    requetes, 
+    requetes: dict[str, Query],
     query_comptage: dict[str, Count],
     query_total: dict[str, Sum]
-):
+) -> pl.DataFrame:
 
     data_requetes = requetes
     req_moyenne = {k: v for k, v in data_requetes.items() if isinstance(v, Mean)}
@@ -194,7 +196,7 @@ def df_ratio(
     requetes: dict[str, Query],
     query_comptage: dict[str, Count],
     query_total: dict[str, Sum]
-):
+) -> pl.DataFrame:
 
     data_requetes = requetes
     req_ratio = {k: v for k, v in data_requetes.items() if isinstance(v, Ratio)}
@@ -295,7 +297,7 @@ def df_ratio(
     return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
 
 
-def df_quantile(query_quantile: dict[str, Quantile]) -> pd.DataFrame:
+def df_quantile(query_quantile: dict[str, Quantile]) -> pl.DataFrame:
 
     results = []
     for query in query_quantile.values():
@@ -315,12 +317,19 @@ def df_quantile(query_quantile: dict[str, Quantile]) -> pd.DataFrame:
     return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
 
 
-def calculer_toutes_les_requetes(info_dataset, key_values, dict_query, progress=None):
+def calculer_toutes_les_requetes(
+    info_dataset: InfoDataset,
+    dict_query: dict[str, Query],
+    key_values: Optional[dict[str, list[str]]] = None,
+    progress: Optional[ui.Progress] = None
+) -> dict[str, pd.DataFrame]:
+
     current_results = {}
 
     for i, (key, query) in enumerate(dict_query.items(), start=1):
 
         if progress:
+            print(type(progress))
             progress.set(i, message=f"Requête {key} — {type(query)}", detail="Calcul en cours...")
 
         if "centre" in query.execute_dp.__code__.co_varnames:
@@ -342,7 +351,13 @@ def calculer_toutes_les_requetes(info_dataset, key_values, dict_query, progress=
     return current_results
 
 
-def optimisation_et_assemblage_results(results_store, requetes, data_query, modalite):
+def optimisation_et_assemblage_results(
+    results_store: dict[str, pd.DataFrame],
+    requetes: dict[str, Query],
+    data_query: dict[str, Union[Count, Sum, Quantile]],
+    key_values: dict[str, list[str]]
+) -> dict[str, pl.DataFrame]:
+
     current_results = results_store
     final_results = {}
     intermed_results = {}
@@ -354,7 +369,7 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
     for filtre in filtres_uniques:
         query_filtre = {k: v for k, v in query_comptage.items() if v.filtre == filtre}
         results_filtre = {k: v for k, v in current_results.items() if k in query_filtre}
-        results_filtre = calcul_MCG(results_filtre, modalite, query_comptage, "count")
+        results_filtre = calcul_MCG(results_filtre, key_values, query_comptage, "count")
         intermed_results.update(results_filtre)
 
     # Traitement Sum
@@ -369,7 +384,7 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
                 if getattr(v, "variable", None) == variable and v.filtre == filtre
             }
             results_filtre = {k: v for k, v in current_results.items() if k in query_filtre_variable}
-            results_filtre = calcul_MCG(results_filtre, modalite, query_filtre_variable, "sum", pos=False)
+            results_filtre = calcul_MCG(results_filtre, key_values, query_filtre_variable, "sum", pos=False)
             intermed_results.update(results_filtre)
 
     for key, req in requetes.items():

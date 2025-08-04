@@ -5,7 +5,7 @@ import opendp.prelude as dp
 from scipy.optimize import fsolve
 
 from src.stats_dp.constant import radio_to_weight
-from src.stats_dp.request_class import Sum, Mean, Ratio, Quantile
+from src.stats_dp.request_class import Sum, Mean, Ratio, Quantile, Query
 import yaml
 import operator
 import os
@@ -19,8 +19,10 @@ import time
 
 
 def optimisation_chaine(
-    dict_query: dict[str, dict[str, Any]], modalite, budget_total
-) -> dict[str, dict[str, Any]]:
+    dict_query: dict[str, Query],
+    key_values: dict[str, list[str]],
+    budget_total: float
+) -> dict[str, Query]:
 
     filtres_uniques = set(query.filtre for query in dict_query.values())
     variables_uniques = set(getattr(query, "variable", None) for query in dict_query.values())
@@ -34,14 +36,17 @@ def optimisation_chaine(
                 if getattr(v, "variable", None) == variable and v.filtre == filtre
             }
             query_filtre_variable_opt = optimization_boosted(
-                dict_query=query_filtre_variable, modalite=modalite, budget_total=budget_total
+                dict_query=query_filtre_variable, key_values=key_values, budget_total=budget_total
             )
             requetes_finales.update(query_filtre_variable_opt)
 
     return requetes_finales
 
 
-def save_yaml_metadata_from_dataframe(lf: pl.DataFrame, dataset_name: str = "dataset") -> None:
+def save_yaml_metadata_from_dataframe(
+    lf: pl.DataFrame, 
+    dataset_name: str = "dataset"
+) -> None:
     # Résolution anticipée du schéma et des noms de colonnes
     schema = lf.collect_schema()
     colnames = list(schema.keys())
@@ -104,7 +109,13 @@ def load_yaml_metadata(dataset_name: str = "dataset") -> dict:
     return metadata
 
 
-def intervalle_confiance_quantile(dataset: pl.LazyFrame, req: dict, epsilon: float, vrai_tableau: pl.DataFrame):
+def intervalle_confiance_quantile(
+    dataset: pl.LazyFrame,
+    req: Quantile,
+    epsilon: float,
+    vrai_tableau: pl.DataFrame
+) -> dict[str, float]:
+
     variable = req.variable
     bounds_min, bounds_max = req.bounds
     alphas = [float(a) for a in req.alpha]
@@ -188,7 +199,10 @@ def intervalle_confiance_quantile(dataset: pl.LazyFrame, req: dict, epsilon: flo
     }
 
 
-def generate_yaml_metadata_from_dataframe(lf: pl.DataFrame, dataset_name: str = "dataset") -> str:
+def generate_yaml_metadata_from_dataframe(
+    lf: pl.DataFrame,
+    dataset_name: str = "dataset"
+) -> str:
 
     # Résolution anticipée du schéma et des noms de colonnes
     schema = lf.collect_schema()
@@ -239,12 +253,16 @@ def generate_yaml_metadata_from_dataframe(lf: pl.DataFrame, dataset_name: str = 
         metadata['columns'][col] = col_meta
 
     yaml_str = yaml.dump(metadata, sort_keys=False, allow_unicode=True)
+    print(type(yaml_str))
     return yaml_str
 
 
 # ------------------------------------------
 # Utils: produit des modalités pour un frozenset
-def produit_modalites(fset, nb_modalite):
+def produit_modalites(
+    fset,
+    nb_modalite
+):
     if not fset:
         return 1
     return reduce(operator.mul, (nb_modalite[v] for v in fset), 1)
@@ -252,7 +270,10 @@ def produit_modalites(fset, nb_modalite):
 
 # ------------------------------------------
 # Construction des matrices X (design) et R (contraintes)
-def MCG(liste_requests, modalite):
+def MCG(
+    liste_requests: list[Query],
+    key_values: dict[str, list[str]]
+):
     """
     Construit la matrice de design X, la matrice de contraintes R,
     et un DataFrame annoté des requêtes (X_df_infos).
@@ -266,7 +287,7 @@ def MCG(liste_requests, modalite):
         R : matrice numpy (r x p) des contraintes linéaires
         X_df_infos : DataFrame avec informations sur chaque ligne de X
     """
-    nb_modalite = {k: len(v) for k, v in modalite.items()}
+    nb_modalite = {k: len(v) for k, v in key_values.items()}
 
     # Les feuilles sont les groupements qui ne sont inclus dans aucun autre
     feuilles = [req for req in liste_requests if not any(req < other for other in liste_requests)]
@@ -365,7 +386,11 @@ def MCG(liste_requests, modalite):
 
 # ------------------------------------------
 # Intégration des valeurs observées et variances dans le DataFrame info
-def ajouter_colonne_value(x_df_info, data_query, results_store):
+def ajouter_colonne_value(
+    x_df_info,
+    data_query,
+    results_store
+):
     """
     Ajoute les colonnes "value" et "sigma2" dans X_df_infos à partir des résultats
     et des requêtes.
@@ -405,7 +430,13 @@ def ajouter_colonne_value(x_df_info, data_query, results_store):
 
 # ------------------------------------------
 # Mise à jour du dictionnaire results_store avec les valeurs recalculées
-def mettre_a_jour_results_store(x_df_info, data_query, results_store, col_source="value_MCG", col_cible="count"):
+def mettre_a_jour_results_store(
+    x_df_info,
+    data_query,
+    results_store,
+    col_source="value_MCG",
+    col_cible="count"
+):
     """
     Met à jour les DataFrames dans results_store avec les valeurs calculées.
     """
@@ -436,7 +467,13 @@ def mettre_a_jour_results_store(x_df_info, data_query, results_store, col_source
 
 # ------------------------------------------
 # Calcul des coefficients beta via moindres carrés pondérés sous contraintes
-def calcul_MCG(results_store, modalite, dict_query, type_req, pos=True):
+def calcul_MCG(
+    results_store,
+    modalite,
+    dict_query,
+    type_req,
+    pos=True
+):
     """
     Calcule les coefficients beta via MCG et met à jour results_store.
     Version adaptée à Polars.
@@ -495,7 +532,11 @@ def calcul_MCG(results_store, modalite, dict_query, type_req, pos=True):
 
 # ------------------------------------------
 # Estimation de l'incertitude (variance corrigée) via méthode boostée
-def optimization_boosted(modalite, dict_query, budget_total):
+def optimization_boosted(
+    modalite, 
+    dict_query, 
+    budget_total
+):
     """
     Calcule la variance corrigée de beta sous contraintes, met à jour dict_query avec 'scale'.
     """
@@ -537,7 +578,10 @@ def optimization_boosted(modalite, dict_query, budget_total):
     return dict_query
 
 
-def rho_from_eps_delta(epsilon: float, delta: float) -> float:
+def rho_from_eps_delta(
+    epsilon: float,
+    delta: float
+) -> float:
     if not (0 < delta < 1):
         raise ValueError("delta must be in (0, 1)")
     if epsilon <= 0:
@@ -549,7 +593,10 @@ def rho_from_eps_delta(epsilon: float, delta: float) -> float:
     return rho
 
 
-def eps_from_rho_delta(rho: float, delta: float) -> float:
+def eps_from_rho_delta(
+    rho: float,
+    delta: float
+) -> float:
     if rho <= 0 or delta <= 0 or delta >= 1:
         raise ValueError("rho must be positive and delta in (0, 1)")
 
@@ -576,7 +623,10 @@ def eps_from_rho_delta(rho: float, delta: float) -> float:
 
 
 def manual_quantile_score(
-    data: Sequence[float], candidats: Sequence[float], alpha: float, et_si: bool = False
+    data: Sequence[float],
+    candidats: Sequence[float],
+    alpha: float,
+    et_si: bool = False
 ) -> tuple[np.ndarray, int]:
     """
     Calcule une mesure de "distance quantile" pour une liste de candidats
@@ -611,7 +661,10 @@ def manual_quantile_score(
     return np.array(scores), max_alpha
 
 
-def get_weights(request: dict[str, dict[str, Any]], dict_values: dict[str, str]) -> dict:
+def get_weights(
+    request: dict[str, Query],
+    dict_values: dict[str, str]
+) -> dict:
     # Étape 1 : récupération des poids bruts
     raw_weights = {
         key: radio_to_weight.get(float(dict_values[key]), 0)
@@ -639,7 +692,11 @@ def get_weights(request: dict[str, dict[str, Any]], dict_values: dict[str, str])
     return weights
 
 
-def load_data(path: str, storage_options: Optional[dict[str, str]] = None) -> pl.LazyFrame:
+def load_data(
+    path: str,
+    storage_options: Optional[dict[str, str]] = None
+) -> pl.LazyFrame:
+
     start = time.time()
     read_kwargs = {"storage_options": storage_options} if path.startswith("s3://") else {}
     lf = pl.read_parquet(path, **read_kwargs).lazy()
@@ -660,7 +717,10 @@ def extract_column_names_from_choices(choices: dict) -> list[str]:
     return columns
 
 
-def extract_bounds(metadata: dict, var_name: str) -> list[float] | None:
+def extract_bounds(
+    metadata: dict,
+    var_name: str
+) -> list[float] | None:
     if 'columns' not in metadata or var_name not in metadata['columns']:
         return None
     col_meta = metadata['columns'][var_name]
@@ -671,7 +731,10 @@ def extract_bounds(metadata: dict, var_name: str) -> list[float] | None:
     return None
 
 
-def assert_or_notify(condition: bool, message: str) -> bool:
+def assert_or_notify(
+    condition: bool,
+    message: str
+) -> bool:
     if not condition:
         ui.notification_show(f"❌ {message}", type="error")
         return False

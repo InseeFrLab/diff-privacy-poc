@@ -134,7 +134,7 @@ class Pipeline():
         print(f"✅ Context terminée en {duration:.2f} secondes.")
 
         resultats_df = calculer_toutes_les_requetes(
-            self.info_dataset, self.key_values, data_query, progress
+            self.info_dataset, data_query, self.key_values, progress
         )
 
         resultats_df = optimisation_et_assemblage_results(
