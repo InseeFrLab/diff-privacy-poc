@@ -1,11 +1,11 @@
 import numpy as np
 import polars as pl
 import pandas as pd
-from scipy.optimize import fsolve
 import opendp.prelude as dp
-from src.constant import (
-    radio_to_weight
-)
+from scipy.optimize import fsolve
+
+from src.stats_dp.constant import radio_to_weight
+from src.stats_dp.request_class import Sum, Mean, Ratio, Quantile
 import yaml
 import operator
 import os
@@ -15,7 +15,6 @@ from functools import reduce
 import cvxpy as cp
 from shiny import ui
 from typing import Optional, Any, Sequence, Union
-from src.request_class import Sum, Mean, Ratio, Quantile
 import time
 
 
