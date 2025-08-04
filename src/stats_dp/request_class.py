@@ -2,10 +2,12 @@ import polars as pl
 from itertools import product
 from abc import ABC, abstractmethod
 import numpy as np
-from typing import Optional, Any
+from typing import Optional, Any, Union
 import re
 import operator
-from opendp.prelude import Context
+import opendp.prelude as dp
+from opendp.extras.polars import LazyFrameQuery
+
 
 # Map des opérateurs Python vers leurs fonctions correspondantes
 OPS = {
@@ -100,13 +102,66 @@ def parse_filter_string(
 
 def generate_public_keys(
     by_keys: list[str],
-    key_values
+    key_values: dict[str, list[str]]
 ) -> pl.LazyFrame:
     # Ne garder que les colonnes utiles pour le group_by
     values = [key_values[key] for key in by_keys if key in key_values]
     combinaisons = list(product(*values))  # Produit cartésien des valeurs
     public_keys = pl.DataFrame([dict(zip(by_keys, comb)) for comb in combinaisons]).lazy()
     return public_keys
+
+
+class InfoDataset():
+    def __init__(
+        self,
+        lf: pl.LazyFrame,
+        contribution_individu_max: int = 1,
+        borne_max_taille_dataset: int = 1
+    ):
+
+        self.lf = lf
+        self.contribution_individu_max = contribution_individu_max
+        self.borne_max_taille_dataset = borne_max_taille_dataset
+        self.context_rho = None
+        self.context_eps = None
+
+    def create_context_rho(
+        self,
+        budget_rho: float,
+        list_poids: list[float]
+    ) -> dp.Context:
+
+        if budget_rho > 0:
+
+            self.context_rho = dp.Context.compositor(
+                data=self.lf,
+                privacy_loss=dp.loss_of(rho=budget_rho),
+                privacy_unit=dp.unit_of(contributions=self.contribution_individu_max),
+                split_by_weights=list_poids,
+                margins=[dp.polars.Margin(max_partition_length=self.borne_max_taille_dataset)]
+            )
+
+        return self.context_rho
+
+    def create_context_eps(
+        self,
+        budget_rho: float,
+        list_poids: list[float]
+    ) -> dp.Context:
+
+        if budget_rho > 0:
+
+            budget_eps = np.sqrt(8*budget_rho)
+
+            self.context_eps = dp.Context.compositor(
+                data=self.lf,
+                privacy_loss=dp.loss_of(epsilon=budget_eps),
+                privacy_unit=dp.unit_of(contributions=self.contribution_individu_max),
+                split_by_weights=list_poids,
+                margins=[dp.polars.Margin(max_partition_length=self.borne_max_taille_dataset)]
+            )
+
+        return self.context_eps
 
 
 class Query(ABC):
@@ -141,25 +196,25 @@ class Query(ABC):
     @abstractmethod
     def plan_dp(
         self,
-        context: Context,
-        key_values
-    ):
+        info_dataset: InfoDataset,
+        key_values: Optional[dict[str, list[str]]] = None
+    ) -> LazyFrameQuery:
         pass
 
     def precision_opendp(
         self,
-        context: Context,
-        key_values,
+        info_dataset: InfoDataset,
+        key_values: Optional[dict[str, list[str]]] = None,
         alpha: float = 0.05
-    ):
-        return self.plan_dp(context, key_values).summarize(alpha=alpha)
+    ) -> pl.DataFrame:
+        return self.plan_dp(info_dataset, key_values).summarize(alpha=alpha)
 
     def execute_dp(
         self,
-        context: Context,
-        key_values
-    ):
-        return self.plan_dp(context, key_values).release().collect()
+        info_dataset: InfoDataset,
+        key_values: Optional[dict[str, list[str]]] = None
+    ) -> pl.DataFrame:
+        return self.plan_dp(info_dataset, key_values).release().collect()
 
     def to_query_dict(self) -> dict[str, Any]:
         exclure = {"groupement", "groupement_style", "id_req", "poids", "sigma2", "scale"}
@@ -168,7 +223,7 @@ class Query(ABC):
             **{k: v for k, v in self.__dict__.items() if v is not None and k not in exclure}
         }
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         cls_name = self.__class__.__name__
         exclure = {"groupement", "groupement_style", "id_req", "poids", "sigma2", "scale"}
         args = [
@@ -181,7 +236,7 @@ class Query(ABC):
     def __eq__(
         self,
         other: "Query"
-    ):
+    ) -> bool:
         exclure = {"groupement", "groupement_style", "id_req", "poids", "sigma2", "scale"}
         if not isinstance(other, self.__class__):
             return False
@@ -192,27 +247,29 @@ class Query(ABC):
             return obj
 
         for key in set(self.__dict__) | set(other.__dict__):
-            if normalize(self.__dict__.get(key)) != normalize(other.__dict__.get(key)) and key not in exclure:
+            val_self = normalize(self.__dict__.get(key))
+            val_other = normalize(other.__dict__.get(key))
+
+            if key not in exclure and val_self != val_other:
                 return False
         return True
 
     def filtre_bounds_by(
         self,
-        lf: pl.LazyFrame,
+        lf: Union[pl.LazyFrame, LazyFrameQuery],
         *expr,
         use_bounds: bool,
-        key_values=None
-    ):
+        key_values: Optional[dict[str, list[str]]] = None
+    ) -> Union[pl.LazyFrame, LazyFrameQuery]:
+
         if self.filtre:
             lf = lf.filter(parse_filter_string(self.filtre))
-
         if use_bounds:
             if isinstance(self, Ratio):
                 lf = apply_bounds(lf, self.variable_numerateur, self.bounds_numerateur)
                 lf = apply_bounds(lf, self.variable_denominateur, self.bounds_denominateur)
             else:
                 lf = apply_bounds(lf, self.variable, self.bounds)
-
         if self.by:
             lf = lf.group_by(self.by).agg(*expr)
             if key_values:
@@ -222,7 +279,6 @@ class Query(ABC):
                 )
         else:
             lf = lf.select(*expr)
-
         return lf
 
 
@@ -230,9 +286,11 @@ class Count(Query):
 
     def plan_dp(
         self,
-        context: Context,
-        key_values
-    ):
+        info_dataset: InfoDataset,
+        key_values: Optional[dict[str, list[str]]] = None
+    ) -> LazyFrameQuery:
+
+        context = info_dataset.context_rho
         query = context.query().with_columns(pl.lit(1).alias("colonne_comptage"))
         expr = (
             pl.col("colonne_comptage")
@@ -240,25 +298,35 @@ class Count(Query):
             .dp.sum((0, 1))
             .alias("count")
         )
+        if key_values is None and self.by is not None:
+            variables = {val for val in self.by}
+            df = info_dataset.lf.select([pl.col(v).drop_nulls() for v in variables]).collect()
+            key_values = {
+                v: sorted(df[v].unique().to_list())
+                for v in variables
+            }
         query = self.filtre_bounds_by(query, expr, use_bounds=False, key_values=key_values)
         return query
 
     def execute(
         self,
-        lf: Context,
+        lf: pl.DataFrame,
         use_bounds: bool = False
     ) -> pl.DataFrame:
+
         expr = (
             pl.count().alias("count")
         )
+        print(type(lf))
         lf = self.filtre_bounds_by(lf, expr, use_bounds=use_bounds)
         return lf.collect()
 
     def precision_dp(
         self,
-        budget_global: float
-    ):
-        self.sigma2 = 1/(2 * budget_global * self.poids)
+        budget: float
+    ) -> float:
+
+        self.sigma2 = 1/(2 * budget * self.poids)
         return self.sigma2
 
 
@@ -276,11 +344,13 @@ class Sum(Query):
 
     def plan_dp(
         self,
-        context: Context,
-        key_values,
+        info_dataset: InfoDataset,
+        key_values: Optional[dict[str, list[str]]] = None,
         centre: bool = False
-    ):
+    ) -> LazyFrameQuery:
+
         l, u = self.bounds
+        context = info_dataset.context_rho
         query = context.query()
 
         if centre:
@@ -302,22 +372,31 @@ class Sum(Query):
                 .alias("sum")
             )
 
+        if key_values is None and self.by is not None:
+            variables = {val for val in self.by}
+            df = info_dataset.lf.select([pl.col(v).drop_nulls() for v in variables]).collect()
+            key_values = {
+                v: sorted(df[v].unique().to_list())
+                for v in variables
+            }
+
         query = self.filtre_bounds_by(query, expr, use_bounds=False, key_values=key_values)
         return query
 
     def execute_dp(
         self,
-        context: Context,
-        key_values,
+        info_dataset: InfoDataset,
+        key_values: Optional[dict[str, list[str]]] = None,
         centre: bool = False
-    ):
-        return self.plan_dp(context, key_values, centre=centre).release().collect()
+    ) -> pl.DataFrame:
+        return self.plan_dp(info_dataset, key_values, centre=centre).release().collect()
 
     def execute(
         self,
         lf: pl.LazyFrame,
         use_bounds: bool
     ) -> pl.DataFrame:
+
         expr = (
             pl.col(self.variable).sum().alias("sum"),
             pl.count().alias("count")
@@ -325,7 +404,7 @@ class Sum(Query):
         lf = self.filtre_bounds_by(lf, expr, use_bounds=use_bounds)
         return lf.collect()
 
-    def transformation(self):
+    def transformation(self) -> (Count, "Sum"):
         """
         Retourne une transformation composée d’un Comptage et du Total lui-même.
         """
@@ -334,10 +413,10 @@ class Sum(Query):
 
     def precision_dp(
         self,
-        budget_global: float
-    ):
+        budget: float
+    ) -> float:
         l, u = self.bounds
-        self.sigma2 = (u - l)**2/(4 * 2 * budget_global * self.poids)
+        self.sigma2 = (u - l)**2/(4 * 2 * budget * self.poids)
         return self.sigma2
 
 
@@ -355,12 +434,14 @@ class Mean(Query):
 
     def plan_dp(
         self,
-        context: Context,
-        key_values
-    ):
+        info_dataset: InfoDataset,
+        key_values: Optional[dict[str, list[str]]] = None
+    ) -> LazyFrameQuery:
+
         l, u = self.bounds
         center = (u + l) / 2
         half_range = (u - l) / 2
+        context = info_dataset.context_rho
         query = context.query()
         expr = (
             (pl.col(self.variable) - center)
@@ -375,8 +456,16 @@ class Mean(Query):
             .dp.sum(bounds=(1, 1))
             .alias("count")
         )
+
+        if key_values is None and self.by is not None:
+            variables = {val for val in self.by}
+            df = info_dataset.lf.select([pl.col(v).drop_nulls() for v in variables]).collect()
+            key_values = {
+                v: sorted(df[v].unique().to_list())
+                for v in variables
+            }
+
         query = self.filtre_bounds_by(query, expr, use_bounds=False, key_values=key_values)
-        # Calcul de la moyenne centrée bruitée, puis recentrage
         return query
 
     def execute(
@@ -384,6 +473,7 @@ class Mean(Query):
         lf: pl.LazyFrame,
         use_bounds: bool
     ) -> pl.DataFrame:
+
         expr = (
             pl.col(self.variable).sum().alias("sum"),
             pl.count().alias("count"),
@@ -394,14 +484,15 @@ class Mean(Query):
 
     def execute_dp(
         self,
-        context: Context,
-        key_values
-    ):
+        info_dataset: InfoDataset,
+        key_values: Optional[dict[str, list[str]]] = None
+    ) -> pl.DataFrame:
+
         l, u = self.bounds
         center = (u + l) / 2
 
         results = (
-            self.plan_dp(context, key_values)
+            self.plan_dp(info_dataset, key_values)
             .release()
             .collect()
             .with_columns(
@@ -410,7 +501,7 @@ class Mean(Query):
         )
         return results
 
-    def transformation(self):
+    def transformation(self) -> (Count, Sum):
         """
         Retourne une transformation composée d’un Comptage et d'un Total.
         """
@@ -437,11 +528,13 @@ class Ratio(Query):
 
     def plan_dp(
         self,
-        context: Context,
-        key_values
-    ):
+        info_dataset: InfoDataset,
+        key_values: Optional[dict[str, list[str]]] = None
+    ) -> LazyFrameQuery:
+
         l_num, u_num = self.bounds_numerateur
         l_denom, u_denom = self.bounds_denominateur
+        context = info_dataset.context_rho
         query = context.query()
         expr = (
             pl.col(self.variable_numerateur)
@@ -456,6 +549,15 @@ class Ratio(Query):
             .dp.sum(bounds=(l_denom, u_denom))
             .alias("sum_denominateur")
         )
+
+        if key_values is None and self.by is not None:
+            variables = {val for val in self.by}
+            df = info_dataset.lf.select([pl.col(v).drop_nulls() for v in variables]).collect()
+            key_values = {
+                v: sorted(df[v].unique().to_list())
+                for v in variables
+            }
+
         query = self.filtre_bounds_by(query, expr, use_bounds=False, key_values=key_values)
         return query
 
@@ -464,6 +566,7 @@ class Ratio(Query):
         lf: pl.LazyFrame,
         use_bounds: bool
     ) -> pl.DataFrame:
+
         expr = (
             pl.col(self.variable_numerateur).sum().alias("sum_num"),
             pl.col(self.variable_denominateur).sum().alias("sum_denom")
@@ -474,11 +577,12 @@ class Ratio(Query):
 
     def execute_dp(
         self,
-        context: Context,
-        key_values
-    ):
+        info_dataset: InfoDataset,
+        key_values: Optional[dict[str, list[str]]] = None
+    ) -> pl.DataFrame:
+
         results = (
-            self.plan_dp(context, key_values)
+            self.plan_dp(info_dataset, key_values)
             .release()
             .collect()
             .with_columns(
@@ -487,13 +591,19 @@ class Ratio(Query):
         )
         return results
 
-    def transformation(self):
+    def transformation(self) -> (Count, Sum, Sum):
         """
         Retourne une transformation composée d’un Comptage et de deux classes Total.
         """
         comptage = Count(by=self.by, filtre=self.filtre)
-        total_num = Sum(by=self.by, filtre=self.filtre, variable=self.variable_numerateur, bounds=self.bounds_numerateur)
-        total_denom = Sum(by=self.by, filtre=self.filtre, variable=self.variable_denominateur, bounds=self.bounds_denominateur)
+        total_num = Sum(
+            by=self.by, filtre=self.filtre, variable=self.variable_numerateur,
+            bounds=self.bounds_numerateur
+        )
+        total_denom = Sum(
+            by=self.by, filtre=self.filtre, variable=self.variable_denominateur,
+            bounds=self.bounds_denominateur
+        )
         return (comptage, total_num, total_denom)
 
 
@@ -518,11 +628,13 @@ class Quantile(Query):
 
     def plan_dp(
         self,
-        context: Context,
-        key_values
-    ):
+        info_dataset: InfoDataset,
+        key_values: Optional[dict[str, list[str]]] = None
+    ) -> LazyFrameQuery:
+
         bounds_min, bounds_max = self.bounds
         candidats = np.linspace(bounds_min, bounds_max, int(self.nb_candidats))
+        context = info_dataset.context_eps
         query = context.query()
         exprs = [
             pl.col(self.variable)
@@ -539,6 +651,7 @@ class Quantile(Query):
         lf: pl.LazyFrame,
         use_bounds: bool
     ) -> pl.DataFrame:
+
         expr = (
             pl.col(self.variable)
             .quantile(float(alpha), interpolation="nearest")

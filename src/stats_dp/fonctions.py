@@ -537,38 +537,6 @@ def optimization_boosted(modalite, dict_query, budget_total):
     return dict_query
 
 
-def create_context(
-    CONTEXT_PARAM: dict[str, Any], budget: float, requete: dict[str, dict[str, Any]]
-) -> tuple[Union[dp.Context, None], Union[dp.Context, None]]:
-
-    # Séparer les poids selon le type de requête
-    poids_rho = [req.poids for req in requete.values() if not isinstance(req, Quantile) ]
-    poids_eps = [req.poids for req in requete.values() if isinstance(req, Quantile)]
-
-    somme_rho = sum(poids_rho)
-    somme_eps = sum(poids_eps)
-
-    budget_rho = budget * somme_rho
-    budget_eps = np.sqrt(8 * budget * somme_eps)
-
-    def create_context(
-        budget_val: float, poids: list[float], is_rho: bool
-    ) -> Union[dp.Context, None]:
-
-        if budget_val == 0:
-            return None
-        return dp.Context.compositor(
-            **CONTEXT_PARAM,
-            privacy_loss=dp.loss_of(rho=budget_val) if is_rho else dp.loss_of(epsilon=budget_val),
-            split_by_weights=poids
-        )
-
-    context_rho = create_context(budget_rho, poids_rho, is_rho=True)
-    context_eps = create_context(budget_eps, poids_eps, is_rho=False)
-
-    return context_rho, context_eps
-
-
 def rho_from_eps_delta(epsilon: float, delta: float) -> float:
     if not (0 < delta < 1):
         raise ValueError("delta must be in (0, 1)")

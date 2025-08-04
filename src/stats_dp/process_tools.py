@@ -6,12 +6,15 @@ from src.stats_dp.constant import (
 from src.stats_dp.fonctions import (
     calcul_MCG
 )
-from src.stats_dp.request_class import Count, Sum, Mean, Quantile, Ratio
+from src.stats_dp.request_class import Count, Sum, Mean, Quantile, Ratio, Query
 import polars as pl
 
 
-def df_comptage(requetes, conception_query_count) -> pd.DataFrame:
-    query_comptage = conception_query_count
+def df_comptage(
+    requetes: dict[str, Query],
+    query_comptage: dict[str, Count]
+) -> pd.DataFrame:
+
     data_requetes = requetes
     req_comptage = {k: v for k, v in data_requetes.items() if isinstance(v, Count)}
     results = []
@@ -31,9 +34,13 @@ def df_comptage(requetes, conception_query_count) -> pd.DataFrame:
     return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
 
 
-def df_total(dataset, requetes, conception_query_count, conception_query_sum) -> pd.DataFrame:
-    query_comptage = conception_query_count
-    query_total = conception_query_sum
+def df_total(
+    dataset: pl.LazyFrame,
+    requetes: dict[str, Query],
+    query_comptage: dict[str, Count],
+    query_total: dict[str, Sum]
+) -> pd.DataFrame:
+
     data_requetes = requetes
     req_total = {k: v for k, v in data_requetes.items() if isinstance(v, Sum)}
 
@@ -101,9 +108,13 @@ def df_total(dataset, requetes, conception_query_count, conception_query_sum) ->
     return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
 
 
-def df_moyenne(dataset, requetes, conception_query_count, conception_query_sum):
-    query_comptage = conception_query_count
-    query_total = conception_query_sum
+def df_moyenne(
+    dataset: pl.LazyFrame,
+    requetes, 
+    query_comptage: dict[str, Count],
+    query_total: dict[str, Sum]
+):
+
     data_requetes = requetes
     req_moyenne = {k: v for k, v in data_requetes.items() if isinstance(v, Mean)}
 
@@ -178,9 +189,13 @@ def df_moyenne(dataset, requetes, conception_query_count, conception_query_sum):
     return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
 
 
-def df_ratio(dataset, requetes, conception_query_count, conception_query_sum):
-    query_comptage = conception_query_count
-    query_total = conception_query_sum
+def df_ratio(
+    dataset: pl.LazyFrame,
+    requetes: dict[str, Query],
+    query_comptage: dict[str, Count],
+    query_total: dict[str, Sum]
+):
+
     data_requetes = requetes
     req_ratio = {k: v for k, v in data_requetes.items() if isinstance(v, Ratio)}
 
@@ -280,8 +295,7 @@ def df_ratio(dataset, requetes, conception_query_count, conception_query_sum):
     return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
 
 
-def df_quantile(conception_query_quantile) -> pd.DataFrame:
-    query_quantile = conception_query_quantile
+def df_quantile(query_quantile: dict[str, Quantile]) -> pd.DataFrame:
 
     results = []
     for query in query_quantile.values():
@@ -301,7 +315,7 @@ def df_quantile(conception_query_quantile) -> pd.DataFrame:
     return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
 
 
-def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dict_query, progress=None):
+def calculer_toutes_les_requetes(info_dataset, key_values, dict_query, progress=None):
     current_results = {}
 
     for i, (key, query) in enumerate(dict_query.items(), start=1):
@@ -309,15 +323,10 @@ def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dict_quer
         if progress:
             progress.set(i, message=f"Requête {key} — {type(query)}", detail="Calcul en cours...")
 
-        if isinstance(query, Quantile):
-            context_use = context_eps
-        else:
-            context_use = context_rho
-
         if "centre" in query.execute_dp.__code__.co_varnames:
-            df_result = query.execute_dp(context_use, key_values, centre=True)
+            df_result = query.execute_dp(info_dataset, key_values=key_values, centre=True)
         else:
-            df_result = query.execute_dp(context_use, key_values)
+            df_result = query.execute_dp(info_dataset, key_values=key_values)
 
         by = query.by
         if by and df_result.shape[1] > 1:

@@ -1,4 +1,4 @@
-from shiny import App, ui, render, reactive, module, Inputs, Outputs, Session
+from shiny import ui, render, reactive, module, Inputs, Outputs, Session
 from shinywidgets import render_plotly
 from pathlib import Path
 from datetime import datetime
@@ -48,7 +48,9 @@ from src.stats_dp.constant import (
     choix_quantile,
     borne_max_taille_dataset
 )
-from src.stats_dp.request_class import Count, Sum, Mean, Ratio, Quantile, parse_filter_string
+from src.stats_dp.request_class import (
+    InfoDataset, Count, Sum, Mean, Ratio, Quantile, parse_filter_string
+)
 from src.stats_dp.pipeline_class import Pipeline
 
 dp.enable_features("contrib")
@@ -307,7 +309,11 @@ def server(input: Inputs, output: Outputs, session: Session):
     # Page Préparer ses requêtes
     @reactive.calc
     def requetes_pipeline() -> Pipeline:
-        return Pipeline(requetes(), dataset(), contrib_individu, borne_max_taille_dataset)
+        info_dataset = InfoDataset(
+            lf=dataset(), contribution_individu_max=contrib_individu,
+            borne_max_taille_dataset=borne_max_taille_dataset
+        )
+        return Pipeline(requetes(), info_dataset)
 
     @reactive.calc
     def requetes_pipeline_precision():
@@ -1063,7 +1069,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     def meta_data() -> ui.Tag:
         """
         Affiche les métadonnées YAML sous forme préformatée,
-        ou un message si aucune métadonnée n’est disponible.
+        ou un message si aucune métadonnée n'est disponible.
         """
         metadata = yaml_metadata_str()
 
@@ -1074,7 +1080,3 @@ def server(input: Inputs, output: Outputs, session: Session):
             ui.tags.p("Métadonnées YAML :"),
             ui.tags.pre(metadata)
         )
-
-# ----------------------------------------------------------------------------------------------
-# ----------------------------------------------------------------------------------------------
-# ----------------------------------------------------------------------------------------------

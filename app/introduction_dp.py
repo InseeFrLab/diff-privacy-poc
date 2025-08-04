@@ -77,7 +77,7 @@ def bloc_score_quantile():
                     </p>
                     <br><br>
                     <p style="margin-left:10px">
-                        où \\( \\alpha \\) est l’ordre du quantile, \\( c \\) un candidat, et \\( x \\) notre variable d'intérêt
+                        où \\( \\alpha \\) est l'ordre du quantile, \\( c \\) un candidat, et \\( x \\) notre variable d'intérêt
                         de taille \\( n \\).
                     </p>
                 </div>

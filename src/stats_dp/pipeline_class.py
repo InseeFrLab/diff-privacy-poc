@@ -6,10 +6,9 @@ from src.stats_dp.process_tools import (
     df_comptage, df_total, df_moyenne, df_ratio, df_quantile
 )
 from src.stats_dp.fonctions import (
-    optimisation_chaine,
-    create_context, intervalle_confiance_quantile
+    optimisation_chaine, intervalle_confiance_quantile
 )
-from src.stats_dp.request_class import Count, Sum, Quantile, Query
+from src.stats_dp.request_class import Count, Sum, Quantile, Query, InfoDataset
 import numpy as np
 import time
 dp.enable_features("contrib")
@@ -19,14 +18,13 @@ class Pipeline():
     def __init__(
         self,
         dict_req: dict[str, Query],
-        lf: pl.LazyFrame,
-        contribution_individu_max: int = 1,
-        borne_max_taille_dataset: int = 1
+        info_dataset: InfoDataset
     ):
         self.dict_req = dict_req
-        self.lf = lf
-        self.contribution_individu_max = contribution_individu_max
-        self.borne_max_taille_dataset = borne_max_taille_dataset
+        self.info_dataset = info_dataset
+        self.lf = info_dataset.lf
+        self.contribution_individu_max = info_dataset.contribution_individu_max
+        self.borne_max_taille_dataset = info_dataset.borne_max_taille_dataset
 
         variables = {val for request in self.dict_req.values() if request.by for val in request.by}
         df = self.lf.select([pl.col(v).drop_nulls() for v in variables]).collect()
@@ -61,6 +59,7 @@ class Pipeline():
         self,
         use_bounds: bool = False
     ) -> dict[str, pl.DataFrame]:
+
         print("==> Début execute")
         start_global = time.time()
         dict_resultat = {}
@@ -115,25 +114,33 @@ class Pipeline():
         else:
             filtered_lazy = data_lazy.select(selected_columns).collect().lazy()
 
-        context_param = {
-            "data": filtered_lazy,
-            "privacy_unit": dp.unit_of(contributions=self.contribution_individu_max),
-            "margins": [dp.polars.Margin(max_partition_length=self.borne_max_taille_dataset)],
-        }
+        # Séparer les poids selon le type de requête
+        poids_rho = [req.poids for req in data_query.values() if not isinstance(req, Quantile)]
+        poids_eps = [req.poids for req in data_query.values() if isinstance(req, Quantile)]
+
+        somme_rho = sum(poids_rho)
+        somme_eps = sum(poids_eps)
+
+        budget_rho = budget_global * somme_rho
+        budget_eps = budget_global * somme_eps
 
         start_context = time.time()
 
-        context_rho, context_eps = create_context(
-            context_param, budget_global, data_query
-        )
+        self.info_dataset.lf = filtered_lazy
+        self.info_dataset.create_context_rho(budget_rho, poids_rho)
+        self.info_dataset.create_context_eps(budget_eps, poids_eps)
+
         duration = time.time() - start_context
         print(f"✅ Context terminée en {duration:.2f} secondes.")
 
         resultats_df = calculer_toutes_les_requetes(
-            context_rho, context_eps, self.key_values, data_query, progress
+            self.info_dataset, self.key_values, data_query, progress
         )
 
-        resultats_df = optimisation_et_assemblage_results(resultats_df, self.dict_req, data_query, self.key_values)
+        resultats_df = optimisation_et_assemblage_results(
+            resultats_df, self.dict_req, data_query, self.key_values
+        )
+
         total_duration = time.time() - start_global
         print(f"<== Fin execute_dp (temps total : {total_duration:.2f} secondes)")
         return resultats_df
@@ -143,6 +150,7 @@ class Pipeline():
         budget_global: float,
         dict_poids: dict[str, float]
     ) -> dict[str, pl.DataFrame]:
+
         print("==> Début precision_dp")
         start_global = time.time()
 
@@ -184,49 +192,12 @@ class Pipeline():
         print(f"<== Fin precision_dp (temps total : {total_duration:.2f} secondes)")
         return results
 
-    def precision_opendp(
-        self,
-        budget_global: float,
-        dict_poids: dict[str, float],
-        alpha: float = 0.05
-    ) -> dict[str, pl.DataFrame]:
-        dict_resultat = {}
-
-        context_param = {
-            "data": self.lf,
-            "privacy_unit": dp.unit_of(contributions=self.contribution_individu_max),
-            "margins": [dp.polars.Margin(max_partition_length=self.borne_max_taille_dataset)],
-        }
-
-        data_requetes = {k: copy.deepcopy(v) for k, v in self.dict_req.items()}
-        poids_total = sum(poids for poids in dict_poids.values())
-
-        for key, request in data_requetes.items():
-            request.poids = dict_poids[key] / poids_total
-
-        context_rho, context_eps = create_context(
-            context_param, budget_global, data_requetes
-        )
-
-        for key, request in data_requetes.items():
-
-            if isinstance(request, Quantile):
-                context_use = context_eps
-            else:
-                context_use = context_rho
-
-            resultat = request.precision_opendp(
-                context=context_use, key_values=self.key_values, alpha=alpha
-            )
-            dict_resultat[key] = resultat
-
-        return dict_resultat
-
     def _query_pondere(
         self,
         budget_global: float,
         dict_poids: dict[str, float]
     ) -> dict[str, Query]:
+
         for request in self.dict_query.values():
             request.poids = sum(dict_poids.get(r, 0) for r in request.id_req)
 
