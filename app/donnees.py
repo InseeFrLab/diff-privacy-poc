@@ -1,5 +1,5 @@
 from shiny import ui
-from stats_dp.constant import chemin_dataset
+from src.stats_dp.constant import chemin_dataset
 
 
 def page_donnees():

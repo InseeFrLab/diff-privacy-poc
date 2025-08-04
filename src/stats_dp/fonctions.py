@@ -4,8 +4,8 @@ import pandas as pd
 import opendp.prelude as dp
 from scipy.optimize import fsolve
 
-from stats_dp.constant import radio_to_weight
-from stats_dp.request_class import Sum, Mean, Ratio, Quantile
+from src.stats_dp.constant import radio_to_weight
+from src.stats_dp.request_class import Sum, Mean, Ratio, Quantile
 import yaml
 import operator
 import os

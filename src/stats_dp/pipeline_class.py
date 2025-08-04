@@ -1,16 +1,15 @@
 import polars as pl
 import opendp.prelude as dp
-from typing import Any
 import copy
-from stats_dp.process_tools import (
+from src.stats_dp.process_tools import (
     calculer_toutes_les_requetes, optimisation_et_assemblage_results,
     df_comptage, df_total, df_moyenne, df_ratio, df_quantile
 )
-from stats_dp.fonctions import (
+from src.stats_dp.fonctions import (
     optimisation_chaine,
     create_context, intervalle_confiance_quantile
 )
-from stats_dp.request_class import Count, Sum, Quantile, Query
+from src.stats_dp.request_class import Count, Sum, Quantile, Query
 import numpy as np
 import time
 dp.enable_features("contrib")
@@ -143,7 +142,7 @@ class Pipeline():
         self,
         budget_global: float,
         dict_poids: dict[str, float]
-    ):
+    ) -> dict[str, pl.DataFrame]:
         print("==> Début precision_dp")
         start_global = time.time()
 
@@ -190,7 +189,7 @@ class Pipeline():
         budget_global: float,
         dict_poids: dict[str, float],
         alpha: float = 0.05
-    ):
+    ) -> dict[str, pl.DataFrame]:
         dict_resultat = {}
 
         context_param = {
@@ -227,7 +226,7 @@ class Pipeline():
         self,
         budget_global: float,
         dict_poids: dict[str, float]
-    ) -> dict[str, dict[str, Any]]:
+    ) -> dict[str, Query]:
         for request in self.dict_query.values():
             request.poids = sum(dict_poids.get(r, 0) for r in request.id_req)
 

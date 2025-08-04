@@ -1,12 +1,12 @@
 import numpy as np
 import pandas as pd
-from stats_dp.constant import (
+from src.stats_dp.constant import (
     choix_quantile
 )
-from stats_dp.fonctions import (
+from src.stats_dp.fonctions import (
     calcul_MCG
 )
-from stats_dp.request_class import Count, Sum, Mean, Quantile, Ratio
+from src.stats_dp.request_class import Count, Sum, Mean, Quantile, Ratio
 import polars as pl
 
 
