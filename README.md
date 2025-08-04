@@ -1,10 +1,14 @@
 # Differentially private statistics
 
-## Install project
+## Install the project
+For local installation in current environment
+```bash
+uv pip install .
 ```
-uv venv statsdp
-source statsdp/bin/activate
-uv pip install -e .
+
+For global installation
+```bash
+uv pip install . --system
 ```
 
 
@@ -18,3 +22,27 @@ shiny run app.poc --reload --launch-browser
 shiny run app.poc --autoreload-port 8000
 shiny run app.poc --port 5000 --host 0.0.0.0
 ```
+
+## Install project for development
+
+```bash
+uv venv statsdp
+source statsdp/bin/activate
+uv pip install -e .
+```
+
+
+## Generate documentation
+
+First install requirements
+```bash
+uv pip install -r requirements-docs.txt
+```
+
+To (re)generate documentation, run `make html` from the `/docs` folder
+
+To browse generated documentation:
+```bash
+uv python -m http.server -d docs/_build/html
+```
+then access (http://localhost:8000)[http://localhost:8000] from a web browser.
