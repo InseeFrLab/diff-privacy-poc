@@ -32,6 +32,18 @@ uv pip install -e .
 ```
 
 
+To use in notebooks, avoid `uv`:
+```bash
+python -m venv create statsdp
+source statsdp/bin/activate
+python -m ensurepip --upgrade
+python -m pip install -e .
+python -m pip install ipykernel
+python -m ipykernel install --user --name=statsdp --display-name "Python (statsdp)"
+```
+
+
+
 ## Generate documentation
 
 First install requirements
