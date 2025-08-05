@@ -8,7 +8,7 @@ sns.set_theme(style="whitegrid")
 
 
 def get_custom_color(val_color: Union[str, tuple]):
-    if val_color == "Aucun":
+    if val_color == "None":
         return "darkgreen"
     if isinstance(val_color, str):
         return "steelblue"

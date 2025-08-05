@@ -49,9 +49,9 @@ from src.stats_dp.constant import (
     borne_max_taille_dataset
 )
 from src.stats_dp.request_class import (
-    InfoDataset, Count, Sum, Mean, Ratio, Quantile, parse_filter_string
+    DatasetInfo, Count, Sum, Mean, Ratio, Quantile, parse_filter_expression
 )
-from src.stats_dp.pipeline_class import Pipeline
+from src.stats_dp.pipeline_class import QueryPipeline
 
 dp.enable_features("contrib")
 
@@ -130,11 +130,11 @@ def bloc_budget_server(
     type_req = session.ns
 
     def bloc_visible() -> bool:
-        return any(isinstance(req, type_map[type_req]) for req in req_pipeline().dict_req.values())
+        return any(isinstance(req, type_map[type_req]) for req in req_pipeline().queries.values())
 
     @reactive.calc
     def dataframe() -> pd.DataFrame:
-        df = requetes_pipeline_precision()[type_req].to_pandas()
+        df = requetes_pipeline_precision()[type_map[type_req].__name__].to_pandas()
         df["groupement"] = df["groupement"].apply(
             lambda x: ast.literal_eval(x) if isinstance(x, str) and x.startswith("(") else x
         )
@@ -308,12 +308,13 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     # Page Préparer ses requêtes
     @reactive.calc
-    def requetes_pipeline() -> Pipeline:
-        info_dataset = InfoDataset(
-            lf=dataset(), contribution_individu_max=contrib_individu,
-            borne_max_taille_dataset=borne_max_taille_dataset
+    def requetes_pipeline() -> QueryPipeline:
+        dataset_info = DatasetInfo(
+            lf=dataset(),
+            max_individual_contribution=contrib_individu,
+            max_dataset_size_bound=borne_max_taille_dataset
         )
-        return Pipeline(requetes(), info_dataset)
+        return QueryPipeline(requetes(), dataset_info)
 
     @reactive.calc
     def requetes_pipeline_precision():
@@ -514,29 +515,30 @@ def server(input: Inputs, output: Outputs, session: Session):
         bounds_denom = extract_bounds(metadata_dict, variable_denom)
 
         # Vérification syntaxique du filtre
-        filtre_str = input.filtre()
-        if filtre_str:
+        filter_expr = input.filtre()
+        if filter_expr:
             try:
                 all_columns = extract_column_names_from_choices(variable_choices())
-                _ = parse_filter_string(filtre_str, columns=all_columns)
-            except Exception:
+                _ = parse_filter_expression(filter_expr, available_columns=all_columns)
+            except Exception as e:
                 text = (
                     "❌ Erreur dans le format du filtre : "
                     "vérifiez les opérateurs et les noms de variables"
                 )
                 ui.notification_show(text, type="error")
+                print(e)
                 return
 
         base_dict = {
             "type": type_req,
             "variable": variable,
             "bounds": bounds,
-            "by": sorted(input.group_by()),
-            "filtre": input.filtre(),
+            "group_by": sorted(input.group_by()),
+            "filter_expr": input.filtre(),
         }
 
         if type_req == 'Quantile':
-            alpha = sorted(input.alpha())
+            alphas = sorted(input.alpha())
 
             if not assert_or_notify(
                 nb_candidats,
@@ -551,13 +553,13 @@ def server(input: Inputs, output: Outputs, session: Session):
                 return
 
             if not assert_or_notify(
-                alpha,
+                alphas,
                 "Pas de quantile sélectionné"
             ):
                 return
 
             base_dict.update({
-                "alpha": alpha,
+                "alphas": alphas,
                 "nb_candidats": nb_candidats,
             })
 
@@ -923,9 +925,9 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         req_pipeline = requetes_pipeline()
 
-        with ui.Progress(min=0, max=len(req_pipeline.dict_query)) as p:
+        with ui.Progress(min=0, max=len(req_pipeline.internal_queries)) as p:
             p.set(0, message="Traitement en cours...", detail="Analyse requête par requête...")
-            resultats = req_pipeline.execute_dp(input.budget_total(), get_poids_req(), progress=p)
+            resultats = req_pipeline.execute_dp(input.budget_total(), get_poids_req(), show_progress=p)
 
         resultats_df.set(resultats)
         return afficher_resultats(resultats_df, requetes())
