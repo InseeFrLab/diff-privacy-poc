@@ -15,6 +15,39 @@ import cvxpy as cp
 from shiny import ui
 from typing import Optional, Sequence, Union, FrozenSet
 import time
+import re
+
+OPS = ["==", "!=", ">=", "<=", ">", "<"]
+
+
+def extract_columns_from_filter(filter_expr: str) -> set[str]:
+    """
+    Extracts all column names used in a filter expression string.
+
+    Args:
+        filter_expr (str): A filter string using '&' and '|' operators,
+            e.g. "age > 18 & gender == 'M'".
+
+    Returns:
+        set[str]: A set of column names referenced in the filter.
+    """
+    if not filter_expr.strip():
+        raise ValueError("The filter expr is empty.")
+
+    tokens = re.split(r'(\s+\&\s+|\s+\|\s+)', filter_expr)
+    column_names = set()
+
+    for token in tokens:
+        token = token.strip()
+        if token in {"&", "|"} or not token:
+            continue
+        for op_str in OPS:
+            if op_str in token:
+                left, _ = token.split(op_str, 1)
+                column = left.strip()
+                column_names.add(column)
+                break
+    return column_names
 
 
 def add_variance(
@@ -48,7 +81,7 @@ def add_confidence_interval(
     rho_budget: float
 ) -> dict[str, Query]:
 
-    unique_filters = set(query.filter for query in quantile_queries.values())
+    unique_filters = set(query.filter_expr for query in quantile_queries.values())
     unique_variables = set(query.variable for query in quantile_queries.values())
 
     for filter_value in unique_filters:
@@ -640,9 +673,9 @@ def compute_quantile_confidence_interval(
 
     variable = req.variable
     bounds_min, bounds_max = req.bounds
-    alphas = [float(a) for a in req.alpha]
-    nb_candidats = int(req.nb_candidats)
-    by = req.by
+    alphas = [float(a) for a in req.alphas]
+    nb_candidats = int(req.num_candidates)
+    by = req.group_by
 
     candidats = np.linspace(bounds_min, bounds_max, nb_candidats + 1)
     precisions_by_alpha = {alpha: [] for alpha in alphas}

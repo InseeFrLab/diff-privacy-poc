@@ -8,7 +8,7 @@ from src.stats_dp.process_tools import (
     compute_quantile_diagnostics
 )
 from src.stats_dp.fonctions import (
-    add_variance, add_confidence_interval
+    add_variance, add_confidence_interval, extract_columns_from_filter
 )
 from src.stats_dp.request_class import Count, Sum, Quantile, Query, DatasetInfo
 import time
@@ -141,8 +141,16 @@ class QueryPipeline():
             v for v in (getattr(query, "denominator_variable", None) for query in internal_queries.values())
             if v is not None
         }
-        # TO DO: ajouter variable filtre
-        selected_columns = set(by_vars | main_vars | numerator_vars | denominator_vars)
+        filter_vars = {
+            col
+            for query in internal_queries.values()
+            if getattr(query, "filter_expr", None)
+            for col in extract_columns_from_filter(query.filter_expr)
+        }
+
+        selected_columns = set(
+            by_vars | main_vars | numerator_vars | denominator_vars | filter_vars
+        )
 
         # Minimal LazyFrame filtering
         if not selected_columns:

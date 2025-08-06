@@ -847,7 +847,7 @@ class Quantile(Query):
         - group_by: optional grouping variables
         - filter_expr: optional filter expression
         """
-        super().__init__(group_by=group_by, filter=filter_expr)
+        super().__init__(group_by=group_by, filter_expr=filter_expr)
         self.variable = variable
         self.bounds = bounds
         self.alphas = alphas if isinstance(alphas, list) else [alphas]
@@ -862,7 +862,7 @@ class Quantile(Query):
         Plans the differentially private quantile queries.
         """
         bounds_min, bounds_max = self.bounds
-        candidates = np.linspace(bounds_min, bounds_max, self.num_candidates)
+        candidates = np.linspace(bounds_min, bounds_max, int(self.num_candidates))
         context = dataset_info.epsilon_context
         query = context.query()
 

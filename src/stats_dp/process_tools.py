@@ -69,7 +69,12 @@ def compute_count_diagnostics(
             "écart type bruit": np.sqrt(internal_count_query.sigma2)
         })
 
-    return pl.DataFrame(results)
+    results = pl.DataFrame(results)
+    results = results.with_columns([
+        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes)
+        if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
+    ])
+    return results
 
 
 def compute_sum_diagnostics(
@@ -166,7 +171,12 @@ def compute_sum_diagnostics(
 
         })
 
-    return pl.DataFrame(results)
+    results = pl.DataFrame(results)
+    results = results.with_columns([
+        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes)
+        if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
+    ])
+    return results
 
 
 def compute_mean_diagnostics(
@@ -283,7 +293,12 @@ def compute_mean_diagnostics(
             "écart type bruit comptage": np.sqrt(sum_sigma2),
         })
 
-    return pl.DataFrame(results)
+    results = pl.DataFrame(results)
+    results = results.with_columns([
+        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes)
+        if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
+    ])
+    return results
 
 
 def compute_ratio_diagnostics(
@@ -332,10 +347,10 @@ def compute_ratio_diagnostics(
         for row_biaise, row_non_biaise in zip(
             resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)
         ):
-            num_b = row_biaise.get("sum_num", 0)
-            denom_b = row_biaise.get("sum_denom", 1)
-            num = row_non_biaise.get("sum_num", 0)
-            denom = row_non_biaise.get("sum_denom", 1)
+            num_b = row_biaise.get("sum_numerator", 0)
+            denom_b = row_biaise.get("sum_denominator", 1)
+            num = row_non_biaise.get("sum_numerator", 0)
+            denom = row_non_biaise.get("sum_denominator", 1)
 
             if denom == 0:
                 var = float("inf")
@@ -379,7 +394,12 @@ def compute_ratio_diagnostics(
             "écart type bruit comptage": np.sqrt(sigma2_comptage),
         })
 
-    return pl.DataFrame(results)
+    results = pl.DataFrame(results)
+    results = results.with_columns([
+        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes)
+        if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
+    ])
+    return results
 
 
 def compute_quantile_diagnostics(quantile_queries: dict[str, Quantile]) -> pl.DataFrame:
@@ -399,7 +419,12 @@ def compute_quantile_diagnostics(quantile_queries: dict[str, Quantile]) -> pl.Da
                 "taille moyenne IC 95%": taille_ic,
             })
 
-    return pl.DataFrame(results)
+    results = pl.DataFrame(results)
+    results = results.with_columns([
+        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes)
+        if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
+    ])
+    return results
 
 
 def run_all_queries(
@@ -456,7 +481,7 @@ def finalize_and_optimize_results(
     for filtre in filtres_uniques:
         query_filtre = {k: v for k, v in internal_count_queries.items() if v.filter_expr == filtre}
         results_filtre = {k: v for k, v in current_results.items() if k in query_filtre}
-        results_filtre = calcul_MCG(results_filtre, key_values, internal_count_queries, "count")
+        results_filtre = calcul_MCG(results_filtre, key_values, query_filtre, "count")
         intermed_results.update(results_filtre)
 
     # Traitement Sum

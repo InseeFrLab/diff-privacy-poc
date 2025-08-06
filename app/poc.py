@@ -68,6 +68,14 @@ type_map = {
     "Quantile": Quantile
 }
 
+mapping = {
+    "Count": Count,
+    "Sum": Sum,
+    "Mean": Mean,
+    "Ratio": Ratio,
+    "Quantile": Quantile
+}
+
 # 1. UI --------------------------------------
 app_ui = ui.page_navbar(
     ui.head_content(
@@ -470,7 +478,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             requetes_instances = {}
             for name, params in data.items():
                 req_type = params.pop("type", None)
-                cls = type_map.get(req_type)
+                cls = mapping.get(req_type)
                 if not assert_or_notify(cls, "Type de requête inconnu"):
                     continue
                 try:
@@ -560,7 +568,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
             base_dict.update({
                 "alphas": alphas,
-                "nb_candidats": nb_candidats,
+                "num_candidates": nb_candidats,
             })
 
         elif type_req == 'Ratio':
@@ -570,9 +578,12 @@ def server(input: Inputs, output: Outputs, session: Session):
             ):
                 return
 
+            base_dict["numerator_variable"] = base_dict.pop("variable")
+            base_dict["numerator_bounds"] = base_dict.pop("bounds")
+
             base_dict.update({
-                "variable_denominateur": variable_denom,
-                "bounds_denominateur": bounds_denom
+                "denominator_variable": variable_denom,
+                "denominator_bounds": bounds_denom
             })
 
         # Supprimer "type" du dictionnaire (inutilisable pour les classes)
