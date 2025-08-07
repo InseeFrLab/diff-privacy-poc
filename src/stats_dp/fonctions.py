@@ -256,9 +256,10 @@ def MCG(
     def remove_dependent_rows_qr(R, tol=1e-10):
         if R.shape[0] == 0:
             return R
-        Q, R_qr = np.linalg.qr(R.T)
-        independent = np.abs(R_qr).sum(axis=1) > tol
-        return R[independent]
+        Q, R_qr, P = qr(R.T, pivoting=True)
+        rank = np.sum(np.abs(np.diag(R_qr)) > tol)
+        independent_indices = P[:rank]
+        return R[independent_indices]
 
     R = remove_dependent_rows_qr(R)
 
