@@ -6,368 +6,522 @@ from src.stats_dp.constant import (
 from src.stats_dp.fonctions import (
     calcul_MCG
 )
-from src.stats_dp.request_class import Count, Sum, Mean, Quantile, Ratio
+from src.stats_dp.request_class import Count, Sum, Mean, Quantile, Ratio, Query, DatasetInfo
+from typing import Optional, Union
 import polars as pl
+from shiny import ui
 
 
-def df_comptage(requetes, conception_query_count) -> pd.DataFrame:
-    query_comptage = conception_query_count
-    data_requetes = requetes
-    req_comptage = {k: v for k, v in data_requetes.items() if isinstance(v, Count)}
-    results = []
-    for query in query_comptage.values():
-
-        for req in query.id_req:
-
-            if req in req_comptage:
-
-                results.append({
-                    "requête": req,
-                    "groupement": str(query.groupement_style),
-                    "filtre": query.filtre,
-                    "écart type estimation": query.scale,
-                    "écart type bruit": np.sqrt(query.sigma2)
-                })
-    return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
+def find_count_query(query_id: str, internal_queries: dict[str, Query]) -> Count | None:
+    return next(
+        (q for q in internal_queries.values() if query_id in q.query_ids),
+        None
+    )
 
 
-def df_total(dataset, requetes, conception_query_count, conception_query_sum) -> pd.DataFrame:
-    query_comptage = conception_query_count
-    query_total = conception_query_sum
-    data_requetes = requetes
-    req_total = {k: v for k, v in data_requetes.items() if isinstance(v, Sum)}
-
-    results = []
-
-    for key, req in req_total.items():
-
-        for query in query_comptage.values():
-
-            if key in query.id_req:
-                sigma2_comptage = query.sigma2
-                scale_comptage = query.scale
-                break
-
-        for query in query_total.values():
-
-            if key in query.id_req and query.variable == req.variable:
-
-                sigma2_total_centre = query.sigma2
-                scale_total_centre = query.scale
-
-                L, U = query.bounds
-
-                m = (U + L)/2
-
-                var_comptage = (scale_comptage * m)**2
-
-                scale = np.sqrt(var_comptage + scale_total_centre**2)
-
-                resultat = req.execute(dataset, use_bounds=True)
-                resultat_non_biaise = req.execute(dataset, use_bounds=False)
-
-                list_cv = []
-                list_biais_relatif = []
-
-                for row_biaise, row_non_biaise in zip(resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)):
-
-                    # Calcul du CV
-                    cv = 100 * scale / row_biaise["sum"] if row_biaise["sum"] != 0 else float("inf")
-                    biais = row_biaise["sum"] - row_non_biaise["sum"]
-                    biais_relatif = 100 * biais / row_non_biaise["sum"]
-
-                    list_cv.append(cv)
-                    list_biais_relatif.append(biais_relatif)
-
-                cv_moyen = np.mean(list_cv)
-                biais_relatif_moyen = np.mean(list_biais_relatif)
-
-                results.append({
-                    "requête": key,
-                    "variable": req.variable,
-                    "groupement": str(query.groupement_style),
-                    "filtre": query.filtre,
-                    "cv moyen (%)": cv_moyen,
-                    "biais relatif moyen (%)": biais_relatif_moyen,
-                    "écart type estimation": scale,
-                    "écart type total centré": scale_total_centre,
-                    "écart type comptage": scale_comptage,
-                    "écart type bruit total centré": np.sqrt(sigma2_total_centre),
-                    "écart type bruit comptage": np.sqrt(sigma2_comptage),
-
-                })
-
-                break
-    return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
+def find_sum_query(query_id: str, variable: str, internal_queries: dict[str, Query]) -> Sum | None:
+    return next(
+        (q for q in internal_queries.values()
+            if query_id in q.query_ids and q.variable == variable),
+        None
+    )
 
 
-def df_moyenne(dataset, requetes, conception_query_count, conception_query_sum):
-    query_comptage = conception_query_count
-    query_total = conception_query_sum
-    data_requetes = requetes
-    req_moyenne = {k: v for k, v in data_requetes.items() if isinstance(v, Mean)}
+def compute_count_diagnostics(
+    queries: dict[str, Query],
+    internal_count_queries: dict[str, Count]
+) -> pl.DataFrame:
+    """
+    Compute diagnostics for differentially private count queries.
+
+    Parameters
+    ----------
+    queries : dict[str, Query]
+        Dictionary of user queries.
+    internal_count_queries : dict[str, Count]
+        Dictionary of internal Count queries, with noise and group info.
+
+    Returns
+    -------
+    pl.DataFrame
+        A summary table showing, for each count query:
+        - Grouping label
+        - Filter expression
+        - Estimation std deviation
+        - Noise std deviation
+    """
+
+    count_queries = {
+        query_id: query
+        for query_id, query in queries.items()
+        if isinstance(query, Count)
+    }
 
     results = []
 
-    for key, req in req_moyenne.items():
+    for query_id, query in count_queries.items():
+        internal_count_query = find_count_query(query_id, internal_count_queries)
+        results.append({
+            "requête": query_id,
+            "groupement": str(internal_count_query.grouping_label),
+            "filtre": internal_count_query.filter_expr,
+            "écart type estimation": internal_count_query.scale,
+            "écart type bruit": np.sqrt(internal_count_query.sigma2)
+        })
 
-        for query in query_comptage.values():
-
-            if key in query.id_req:
-                sigma2_comptage = query.sigma2
-                scale_comptage = query.scale
-                break
-
-        for query in query_total.values():
-
-            if key in query.id_req and query.variable == req.variable:
-
-                sigma2_total_centre = query.sigma2
-                scale_total_centre = query.scale
-
-                L, U = query.bounds
-                m = (U + L)/2
-
-                var_comptage = (scale_comptage * m)**2
-
-                scale_total = np.sqrt(var_comptage + scale_total_centre**2)
-
-                resultat = req.execute(dataset, use_bounds=True)
-                resultat_non_biaise = req.execute(dataset, use_bounds=False)
-
-                list_var = []
-                list_cv = []
-                list_biais_relatif = []
-
-                for row_biaise, row_non_biaise in zip(resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)):
-                    total_biaise = row_biaise.get("sum", 0)
-                    total = row_non_biaise.get("sum", 0)
-                    count = row_non_biaise.get("count", 1)
-
-                    var = (((count * m - total)**2) * (scale_comptage**2) + (count * scale_total_centre)**2) / count**4 if count != 0 else float("inf")
-                    cv = 100 * np.sqrt(var) / (total_biaise / count) if count != 0 else float("inf")
-
-                    biais = (total_biaise - total) / count
-                    biais_relatif = 100 * biais / (total/count)
-
-                    list_var.append(var)
-                    list_cv.append(cv)
-                    list_biais_relatif.append(biais_relatif)
-
-                var_moyenne = np.mean(var)
-                cv_moyen = np.mean(list_cv)
-                biais_relatif_moyen = np.mean(list_biais_relatif)
-
-                results.append({
-                    "requête": key,
-                    "variable": req.variable,
-                    "groupement": str(query.groupement_style),
-                    "filtre": query.filtre,
-                    "cv moyen (%)": cv_moyen,
-                    "biais relatif moyen (%)": biais_relatif_moyen,
-                    "écart type moyen estimation ": np.sqrt(var_moyenne),
-                    "écart type total": scale_total,
-                    "écart type comptage": scale_comptage,
-                    "écart type total centré": scale_total_centre,
-                    "écart type bruit total centré": np.sqrt(sigma2_total_centre),
-                    "écart type bruit comptage": np.sqrt(sigma2_comptage),
-                })
-
-                break
-
-    return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
+    results = pl.DataFrame(results)
+    results = results.with_columns([
+        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes)
+        if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
+    ])
+    return results
 
 
-def df_ratio(dataset, requetes, conception_query_count, conception_query_sum):
-    query_comptage = conception_query_count
-    query_total = conception_query_sum
-    data_requetes = requetes
-    req_ratio = {k: v for k, v in data_requetes.items() if isinstance(v, Ratio)}
+def compute_sum_diagnostics(
+    lf: pl.LazyFrame,
+    queries: dict[str, Query],
+    internal_count_queries: dict[str, Count],
+    internal_sum_queries: dict[str, Sum]
+) -> pl.DataFrame:
+    """
+    Compute diagnostics for differentially private sum queries, including:
+    - Mean coefficient of variation (CV)
+    - Mean relative bias
+    - Standard deviations of estimation and noise components
+
+    Parameters
+    ----------
+    lf : pl.LazyFrame
+        The input LazyFrame containing the data.
+    queries : dict[str, Query]
+        Dictionary of all user queries.
+    internal_count_queries : dict[str, Count]
+        Internal count queries (used for noise on counts).
+    internal_sum_queries : dict[str, Sum]
+        Internal centered sum queries (used for noise on sum residuals).
+
+    Returns
+    -------
+    pl.DataFrame
+        A summary table with diagnostics per query.
+    """
+
+    sum_queries = {k: v for k, v in queries.items() if isinstance(v, Sum)}
+    results = []
+
+    for query_id, query in sum_queries.items():
+        internal_count_query = find_count_query(query_id, internal_count_queries)
+        internal_sum_query = find_sum_query(query_id, query.variable, internal_sum_queries)
+
+        # Noise and scale components
+        count_sigma2 = internal_count_query.sigma2
+        count_scale = internal_count_query.scale
+
+        sum_sigma2 = internal_sum_query.sigma2
+        sum_scale = internal_sum_query.scale
+
+        lower, upper = query.bounds
+        midpoint = (lower + upper) / 2
+
+        # Total scale = combination of both noise sources
+        count_variance = (count_scale * midpoint) ** 2
+        total_scale = np.sqrt(count_variance + sum_scale ** 2)
+
+        # Execute noisy and unbiased queries
+        biased_df = query.execute(lf, use_bounds=True)
+        unbiased_df = query.execute(lf, use_bounds=False)
+
+        # Compute diagnostics
+        cv_list = []
+        relative_bias_list = []
+
+        for row_biased, row_unbiased in zip(
+            biased_df.iter_rows(named=True),
+            unbiased_df.iter_rows(named=True)
+        ):
+            sum_biased = row_biased["sum"]
+            sum_unbiased = row_unbiased["sum"]
+
+            if sum_biased == 0:
+                cv = float("inf")
+            else:
+                cv = 100 * total_scale / sum_biased
+
+            bias = sum_biased - sum_unbiased
+            relative_bias = 100 * bias / sum_unbiased
+
+            cv_list.append(cv)
+            relative_bias_list.append(relative_bias)
+
+        mean_cv = np.mean(cv_list)
+        mean_relative_bias = np.mean(relative_bias_list)
+
+        results.append({
+            "requête": query_id,
+            "variable": query.variable,
+            "groupement": str(internal_sum_query.grouping_label),
+            "filtre": internal_sum_query.filter_expr,
+            "cv moyen (%)": mean_cv,
+            "biais relatif moyen (%)": mean_relative_bias,
+            "écart type estimation": total_scale,
+            "écart type total centré": sum_scale,
+            "écart type comptage": count_scale,
+            "écart type bruit total centré": np.sqrt(sum_sigma2),
+            "écart type bruit comptage": np.sqrt(count_sigma2),
+
+        })
+
+    results = pl.DataFrame(results)
+    results = results.with_columns([
+        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes)
+        if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
+    ])
+    return results
+
+
+def compute_mean_diagnostics(
+    lf: pl.LazyFrame,
+    queries: dict[str, Query],
+    internal_count_queries: dict[str, Count],
+    internal_sum_queries: dict[str, Sum]
+) -> pl.DataFrame:
+    """
+    Compute diagnostics for differentially private mean queries.
+
+    Parameters
+    ----------
+    lf : pl.LazyFrame
+        Input data.
+    queries : dict[str, Query]
+        Dictionary of user queries.
+    internal_count_queries : dict[str, Count]
+        Internal queries used for noisy counts.
+    internal_sum_queries : dict[str, Sum]
+        Internal queries used for noisy sums.
+
+    Returns
+    -------
+    pl.DataFrame
+        A table with per-query diagnostics:
+        - Mean CV
+        - Relative bias
+        - Decomposition of estimation std deviations
+    """
+
+    mean_queries = {
+        query_id: query
+        for query_id, query in queries.items()
+        if isinstance(query, Mean)
+    }
 
     results = []
 
-    for key, req in req_ratio.items():
+    for query_id, query in mean_queries.items():
 
-        for query in query_comptage.values():
+        internal_count_query = find_count_query(query_id, internal_count_queries)
+        internal_sum_query = find_sum_query(query_id, query.variable, internal_sum_queries)
 
-            if key in query.id_req:
-                sigma2_comptage = query.sigma2
-                scale_comptage = query.scale
-                break
+        # Noise and scale components
+        count_sigma2 = internal_count_query.sigma2
+        count_scale = internal_count_query.scale
 
-        variable_num = req.variable_numerateur
+        sum_sigma2 = internal_sum_query.sigma2
+        sum_scale = internal_sum_query.scale
 
-        for query in query_total.values():
+        # Bounds and midpoint
+        L, U = query.bounds
+        midpoint = (U + L) / 2
 
-            if key in query.id_req and query.variable == variable_num:
+        # Estimation std dev
+        count_variance = (count_scale * midpoint) ** 2
+        total_scale = np.sqrt(count_variance + sum_scale ** 2)
 
-                sigma2_total_num_centre = query.sigma2
-                scale_total_num_centre = query.scale
+        # Execute biased and unbiased
+        biased_df = query.execute(lf, use_bounds=True)
+        unbiased_df = query.execute(lf, use_bounds=False)
 
-                L, U = query.bounds
-                m_num = (U + L)/2
+        list_cv = []
+        list_bias_relative = []
+        list_variance = []
 
-                var_num_comptage = (scale_comptage * m_num)**2
+        for biased_row, unbiased_row in zip(
+            biased_df.iter_rows(named=True),
+            unbiased_df.iter_rows(named=True)
+        ):
+            total_biased = biased_row.get("sum", 0)
+            total_true = unbiased_row.get("sum", 0)
+            count = unbiased_row.get("count", 1)
 
-                scale_total_num = np.sqrt(var_num_comptage + scale_total_num_centre**2)
+            if count == 0:
+                list_variance.append(float("inf"))
+                list_cv.append(float("inf"))
+                list_bias_relative.append(float("inf"))
+                continue
 
-                break
+            # Variance of noisy mean
+            var = (
+                ((count * midpoint - total_true) ** 2) * (count_scale ** 2)
+                + (count * sum_scale) ** 2
+            ) / (count ** 4)
 
-        variable_denom = req.variable_denominateur
+            mean_biased = total_biased / count
+            mean_true = total_true / count
+            bias = mean_biased - mean_true
+            bias_relative = 100 * bias / mean_true if mean_true != 0 else float("inf")
+            cv = 100 * np.sqrt(var) / mean_biased if mean_biased != 0 else float("inf")
 
-        for query in query_total.values():
+            list_variance.append(var)
+            list_cv.append(cv)
+            list_bias_relative.append(bias_relative)
 
-            if key in query.id_req and query.variable == variable_denom:
+        mean_var = np.mean(list_variance)
+        mean_cv = np.mean(list_cv)
+        mean_bias_relative = np.mean(list_bias_relative)
 
-                sigma2_total_denom_centre = query.sigma2
-                scale_total_denom_centre = query.scale
+        results.append({
+            "requête": query_id,
+            "variable": query.variable,
+            "groupement": str(query.grouping_label),
+            "filtre": query.filter_expr,
+            "cv moyen (%)": mean_cv,
+            "biais relatif moyen (%)": mean_bias_relative,
+            "écart type moyen estimation": np.sqrt(mean_var),
+            "écart type total": total_scale,
+            "écart type comptage": count_scale,
+            "écart type total centré": sum_scale,
+            "écart type bruit total centré": np.sqrt(count_sigma2),
+            "écart type bruit comptage": np.sqrt(sum_sigma2),
+        })
 
-                L, U = query.bounds
-                m_denom = (U + L)/2
-
-                var_denom_comptage = (scale_comptage * m_denom)**2
-
-                scale_total_denom = np.sqrt(var_denom_comptage + scale_total_denom_centre**2)
-
-                resultat = req.execute(dataset, use_bounds=True)
-                resultat_non_biaise = req.execute(dataset, use_bounds=False)
-
-                list_var = []
-                list_cv = []
-                list_biais_relatif = []
-
-                for row_biaise, row_non_biaise in zip(resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)):
-                    total_num_biaise = row_biaise.get("sum_num", 0)
-                    total_num = row_non_biaise.get("sum_num", 0)
-                    total_denom_biaise = row_biaise.get("sum_denom", 1)
-                    total_denom = row_non_biaise.get("sum_denom", 1)
-
-                    var = (((total_denom * m_num - total_num * m_denom)**2) * (scale_comptage**2) + (total_denom * scale_total_num_centre)**2 + (total_num * scale_total_denom_centre)**2) / total_denom**4 if total_denom != 0 else float("inf")
-                    cv = 100 * np.sqrt(var) / (total_num_biaise / total_denom_biaise) if total_denom_biaise != 0 else float("inf")
-
-                    biais = total_num_biaise/total_denom_biaise - total_num/total_denom
-                    biais_relatif = 100 * biais / (total_num/total_denom)
-
-                    list_var.append(var)
-                    list_cv.append(cv)
-                    list_biais_relatif.append(biais_relatif)
-
-                var_moyenne = np.mean(var)
-                cv_moyen = np.mean(list_cv)
-                biais_relatif_moyen = np.mean(list_biais_relatif)
-
-                results.append({
-                    "requête": key,
-                    "variable numérateur": variable_num,
-                    "variable dénominateur": variable_denom,
-                    "groupement": str(query.groupement_style),
-                    "filtre": query.filtre,
-                    "cv moyen (%)": cv_moyen,
-                    "biais relatif moyen (%)": biais_relatif_moyen,
-                    "écart type moyen estimation ": np.sqrt(var_moyenne),
-                    "écart type total numérateur": scale_total_num,
-                    "écart type total dénominateur": scale_total_denom,
-                    "écart type total numérateur centré": scale_total_num_centre,
-                    "écart type total dénominateur centré": scale_total_denom_centre,
-                    "écart type comptage": scale_comptage,
-                    "écart type bruit total numérateur centré": np.sqrt(sigma2_total_num_centre),
-                    "écart type bruit total dénominateur centré": np.sqrt(sigma2_total_denom_centre),
-                    "écart type bruit comptage": np.sqrt(sigma2_comptage),
-                })
-
-                break
-
-    return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
+    results = pl.DataFrame(results)
+    results = results.with_columns([
+        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes)
+        if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
+    ])
+    return results
 
 
-def df_quantile(conception_query_quantile) -> pd.DataFrame:
-    query_quantile = conception_query_quantile
+def compute_ratio_diagnostics(
+    lf: pl.LazyFrame,
+    queries: dict[str, Query],
+    internal_count_queries: dict[str, Count],
+    internal_sum_queries: dict[str, Sum]
+) -> pl.DataFrame:
+
+    ratio_queries = {k: v for k, v in queries.items() if isinstance(v, Ratio)}
 
     results = []
-    for query in query_quantile.values():
+
+    for query_id, query in ratio_queries.items():
+
+        internal_count_query = find_count_query(query_id, internal_count_queries)
+        internal_sum_num_query = find_sum_query(
+            query_id, query.numerator_variable, internal_sum_queries
+        )
+        internal_sum_denom_query = find_sum_query(
+            query_id, query.denominator_variable, internal_sum_queries
+        )
+
+        sigma2_comptage = internal_count_query.sigma2
+        scale_comptage = internal_count_query.scale
+
+        # Numérateur
+        L_num, U_num = internal_sum_num_query.bounds
+        m_num = (L_num + U_num) / 2
+        var_num_comptage = (scale_comptage * m_num)**2
+        scale_total_num = np.sqrt(var_num_comptage + internal_sum_num_query.scale**2)
+
+        # Dénominateur
+        L_denom, U_denom = internal_sum_denom_query.bounds
+        m_denom = (L_denom + U_denom) / 2
+        scale_total_denom = np.sqrt((scale_comptage * m_denom)**2 + internal_sum_denom_query.scale**2)
+
+        # Exécution
+        resultat = query.execute(lf, use_bounds=True)
+        resultat_non_biaise = query.execute(lf, use_bounds=False)
+
+        list_var = []
+        list_cv = []
+        list_biais_relatif = []
+
+        for row_biaise, row_non_biaise in zip(
+            resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)
+        ):
+            num_b = row_biaise.get("sum_numerator", 0)
+            denom_b = row_biaise.get("sum_denominator", 1)
+            num = row_non_biaise.get("sum_numerator", 0)
+            denom = row_non_biaise.get("sum_denominator", 1)
+
+            if denom == 0:
+                var = float("inf")
+                cv = float("inf")
+                biais_relatif = float("inf")
+            else:
+                var = (((denom * m_num - num * m_denom)**2) * (scale_comptage**2) +
+                       (denom * internal_sum_num_query.scale)**2 +
+                       (num * internal_sum_denom_query.scale)**2) / denom**4
+
+                ratio_b = num_b / denom_b if denom_b != 0 else float("inf")
+                ratio = num / denom
+                cv = 100 * np.sqrt(var) / ratio_b if ratio_b != 0 else float("inf")
+                biais = ratio_b - ratio
+                biais_relatif = 100 * biais / ratio if ratio != 0 else float("inf")
+
+            list_var.append(var)
+            list_cv.append(cv)
+            list_biais_relatif.append(biais_relatif)
+
+        var_moyenne = np.mean(list_var)
+        cv_moyen = np.mean(list_cv)
+        biais_relatif_moyen = np.mean(list_biais_relatif)
+
+        results.append({
+            "requête": query_id,
+            "variable numérateur": query.numerator_variable,
+            "variable dénominateur": query.denominator_variable,
+            "groupement": str(query.grouping_label),
+            "filtre": query.filter_expr,
+            "cv moyen (%)": cv_moyen,
+            "biais relatif moyen (%)": biais_relatif_moyen,
+            "écart type moyen estimation ": np.sqrt(var_moyenne),
+            "écart type total numérateur": scale_total_num,
+            "écart type total dénominateur": scale_total_denom,
+            "écart type total numérateur centré": internal_sum_num_query.scale,
+            "écart type total dénominateur centré": internal_sum_denom_query.scale,
+            "écart type comptage": scale_comptage,
+            "écart type bruit total numérateur centré": np.sqrt(internal_sum_num_query.sigma2),
+            "écart type bruit total dénominateur centré": np.sqrt(internal_sum_denom_query.sigma2),
+            "écart type bruit comptage": np.sqrt(sigma2_comptage),
+        })
+
+    results = pl.DataFrame(results)
+    results = results.with_columns([
+        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes)
+        if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
+    ])
+    return results
+
+
+def compute_quantile_diagnostics(quantile_queries: dict[str, Quantile]) -> pl.DataFrame:
+
+    results = []
+    for query in quantile_queries.values():
 
         for quantile_key, taille_ic in query.scale.items():
             alpha = float(quantile_key.removeprefix("quantile_"))
 
             results.append({
-                "requête": query.id_req[0],
+                "requête": query.query_ids[0],
                 "variable": query.variable,
                 "quantile": choix_quantile[alpha],
-                "groupement": str(query.groupement_style),
-                "filtre": query.filtre,
+                "groupement": str(query.grouping_label),
+                "filtre": query.filter_expr,
                 "taille moyenne IC 95%": taille_ic,
             })
 
-    return pl.from_pandas(pd.DataFrame(results).dropna(axis=1, how="all").round(1))
+    results = pl.DataFrame(results)
+    results = results.with_columns([
+        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes)
+        if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
+    ])
+    return results
 
 
-def calculer_toutes_les_requetes(context_rho, context_eps, key_values, dict_query, progress=None):
+def run_all_queries(
+    dataset_info: DatasetInfo,
+    internal_queries: dict[str, Query],
+    key_values: Optional[dict[str, list[str]]] = None,
+    show_progress: Optional[ui.Progress] = None
+) -> dict[str, pd.DataFrame]:
+
     current_results = {}
 
-    for i, (key, query) in enumerate(dict_query.items(), start=1):
+    for i, (query_id, query) in enumerate(internal_queries.items(), start=1):
 
-        if progress:
-            progress.set(i, message=f"Requête {key} — {type(query)}", detail="Calcul en cours...")
+        if show_progress:
+            show_progress.set(
+                i, message=f"Requête {query_id} — {query.__class__.__name__}",
+                detail="Calcul en cours..."
+            )
 
-        if isinstance(query, Quantile):
-            context_use = context_eps
+        if "center" in query.execute_dp.__code__.co_varnames:
+            df_result = query.execute_dp(dataset_info, key_values=key_values, center=True)
         else:
-            context_use = context_rho
+            df_result = query.execute_dp(dataset_info, key_values=key_values)
 
-        if "centre" in query.execute_dp.__code__.co_varnames:
-            df_result = query.execute_dp(context_use, key_values, centre=True)
-        else:
-            df_result = query.execute_dp(context_use, key_values)
-
-        by = query.by
-        if by and df_result.shape[1] > 1:
+        group_by = query.group_by
+        if group_by and df_result.shape[1] > 1:
             # Colonnes restantes (dans l'ordre d'origine, sauf celles de `by`)
-            remaining_cols = [col for col in df_result.columns if col not in by]
+            remaining_cols = [col for col in df_result.columns if col not in group_by]
 
             # Réordonner les colonnes
-            df_result = df_result[by + remaining_cols]
-            df_result = df_result.sort(by=by)
+            df_result = df_result[group_by + remaining_cols]
+            df_result = df_result.sort(by=group_by)
 
-        current_results[key] = df_result.to_pandas()
+        current_results[query_id] = df_result.to_pandas()
 
     return current_results
 
 
-def optimisation_et_assemblage_results(results_store, requetes, data_query, modalite):
+def finalize_and_optimize_results(
+    results_store: dict[str, pd.DataFrame],
+    queries: dict[str, Query],
+    internal_queries: dict[str, Union[Count, Sum, Quantile]],
+    key_values: dict[str, list[str]]
+) -> dict[str, pl.DataFrame]:
+
     current_results = results_store
     final_results = {}
     intermed_results = {}
 
     # Traitement Count
-    query_comptage = {k: v for k, v in data_query.items() if isinstance(v, Count)}
-    filtres_uniques = set(query.filtre for query in query_comptage.values())
+    internal_count_queries = {k: v for k, v in internal_queries.items() if isinstance(v, Count)}
+    filtres_uniques = set(query.filter_expr for query in internal_count_queries.values())
 
     for filtre in filtres_uniques:
-        query_filtre = {k: v for k, v in query_comptage.items() if v.filtre == filtre}
+        query_filtre = {k: v for k, v in internal_count_queries.items() if v.filter_expr == filtre}
         results_filtre = {k: v for k, v in current_results.items() if k in query_filtre}
-        results_filtre = calcul_MCG(results_filtre, modalite, query_comptage, "count")
+        results_filtre = calcul_MCG(results_filtre, key_values, query_filtre, "count")
         intermed_results.update(results_filtre)
 
     # Traitement Sum
-    query_total = {k: v for k, v in data_query.items() if isinstance(v, Sum)}
-    filtres_uniques = set(query.filtre for query in query_total.values())
-    variables_uniques = set(getattr(query, "variable", None) for query in query_total.values())
+    internal_sum_queries = {k: v for k, v in internal_queries.items() if isinstance(v, Sum)}
+    filtres_uniques = set(query.filter_expr for query in internal_sum_queries.values())
+    variables_uniques = set(
+        getattr(query, "variable", None) for query in internal_sum_queries.values()
+    )
 
     for filtre in filtres_uniques:
         for variable in variables_uniques:
             query_filtre_variable = {
-                k: v for k, v in query_total.items()
-                if getattr(v, "variable", None) == variable and v.filtre == filtre
+                k: v for k, v in internal_sum_queries.items()
+                if getattr(v, "variable", None) == variable and v.filter_expr == filtre
             }
-            results_filtre = {k: v for k, v in current_results.items() if k in query_filtre_variable}
-            results_filtre = calcul_MCG(results_filtre, modalite, query_filtre_variable, "sum", pos=False)
+            results_filtre = {
+                k: v for k, v in current_results.items() if k in query_filtre_variable
+            }
+            results_filtre = calcul_MCG(
+                results_filtre, key_values, query_filtre_variable, "sum", pos=False
+            )
             intermed_results.update(results_filtre)
 
-    for key, req in requetes.items():
-        if isinstance(req, Sum):
-            key_query_comptage = next((k for k, v in data_query.items() if key in v.id_req and isinstance(v, Count)), None)
-            key_query_total = next((k for k, v in data_query.items() if key in v.id_req and isinstance(v, Sum)), None)
-            L, U = req.bounds
+    for query_id, query in queries.items():
+        if isinstance(query, Sum):
+            key_query_comptage = next(
+                (
+                    k for k, v in internal_queries.items()
+                    if query_id in v.query_ids and isinstance(v, Count)
+                ),
+                None
+            )
+            key_query_total = next(
+                (
+                    k for k, v in internal_queries.items()
+                    if query_id in v.query_ids and isinstance(v, Sum)
+                ),
+                None
+            )
+            L, U = query.bounds
             m = (U + L) / 2
 
             df_result_comptage = intermed_results[key_query_comptage]
@@ -375,8 +529,7 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
 
             # On concatène horizontalement sur l’index (corrigé)
             df_result = pd.concat(
-                [df_result_total.reset_index(drop=True),
-                df_result_comptage.reset_index(drop=True)],
+                [df_result_total.reset_index(drop=True), df_result_comptage.reset_index(drop=True)],
                 axis=1
             )
             # Supprimer les colonnes en doublon éventuelles
@@ -384,16 +537,22 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
 
             df_result["sum"] = df_result["sum"] + df_result["count"] * m
 
-        elif isinstance(req, Mean):
+        elif isinstance(query, Mean):
             key_query_comptage = next(
-                (k for k, v in data_query.items() if key in v.id_req and isinstance(v, Count)),
+                (
+                    k for k, v in internal_queries.items()
+                    if query_id in v.query_ids and isinstance(v, Count)
+                ),
                 None
             )
             key_query_total = next(
-                (k for k, v in data_query.items() if key in v.id_req and isinstance(v, Sum)),
+                (
+                    k for k, v in internal_queries.items()
+                    if query_id in v.query_ids and isinstance(v, Sum)
+                ),
                 None
             )
-            L, U = req.bounds
+            L, U = query.bounds
             m = (U + L) / 2
 
             df_result_comptage = intermed_results[key_query_comptage]
@@ -401,8 +560,7 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
 
             # On concatène horizontalement sur l’index (corrigé)
             df_result = pd.concat(
-                [df_result_total.reset_index(drop=True),
-                df_result_comptage.reset_index(drop=True)],
+                [df_result_total.reset_index(drop=True), df_result_comptage.reset_index(drop=True)],
                 axis=1
             )
 
@@ -417,27 +575,34 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
                 axis=1
             )
 
-        elif isinstance(req, Ratio):
+        elif isinstance(query, Ratio):
             key_query_comptage = next(
-                (k for k, v in data_query.items() if key in v.id_req and isinstance(v, Count)),
+                (
+                    k for k, v in internal_queries.items()
+                    if query_id in v.query_ids and isinstance(v, Count)
+                ),
                 None
             )
-            variable_num = req.variable_numerateur
-            variable_denom = req.variable_denominateur
+            variable_num = query.numerator_variable
+            variable_denom = query.denominator_variable
 
-            L, U = req.bounds_numerateur
+            L, U = query.numerator_bounds
             m_num = (U + L) / 2
-            L, U = req.bounds_denominateur
+            L, U = query.denominator_bounds
             m_denom = (U + L) / 2
 
             key_query_total_num = next(
-                (k for k, v in data_query.items()
-                if key in v.id_req and isinstance(v, Sum) and v.variable == variable_num),
+                (
+                    k for k, v in internal_queries.items()
+                    if query_id in v.query_ids and isinstance(v, Sum) and v.variable == variable_num
+                ),
                 None
             )
             key_query_total_denom = next(
-                (k for k, v in data_query.items()
-                if key in v.id_req and isinstance(v, Sum) and v.variable == variable_denom),
+                (
+                    k for k, v in internal_queries.items()
+                    if query_id in v.query_ids and isinstance(v, Sum) and v.variable == variable_denom
+                ),
                 None
             )
 
@@ -449,9 +614,11 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
 
             # On concatène horizontalement sur l’index (corrigé)
             df_result = pd.concat(
-                [df_result_total_num.reset_index(drop=True),
-                df_result_total_denom.reset_index(drop=True),
-                df_result_comptage.reset_index(drop=True)],
+                [
+                    df_result_total_num.reset_index(drop=True),
+                    df_result_total_denom.reset_index(drop=True),
+                    df_result_comptage.reset_index(drop=True)
+                ],
                 axis=1
             )
 
@@ -468,12 +635,15 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
             )
 
         else:
-            key_query = next((k for k, v in data_query.items() if key in v.id_req), None)
+            key_query = next(
+                (k for k, v in internal_queries.items() if query_id in v.query_ids),
+                None
+            )
 
-            if isinstance(req, Count):
+            if isinstance(query, Count):
                 df_result = intermed_results[key_query]
 
-            if isinstance(req, Quantile):
+            if isinstance(query, Quantile):
                 df_result = current_results[key_query]
 
         df_result = df_result.round(1)
@@ -485,6 +655,6 @@ def optimisation_et_assemblage_results(results_store, requetes, data_query, moda
         if "count" in df_result.columns:
             df_result["count"] = df_result["count"].clip(lower=0)
 
-        final_results[key] = pl.from_pandas(df_result)
+        final_results[query_id] = pl.from_pandas(df_result)
 
     return final_results

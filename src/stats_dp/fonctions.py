@@ -1,11 +1,10 @@
 import numpy as np
 import polars as pl
 import pandas as pd
-import opendp.prelude as dp
 from scipy.optimize import fsolve
 
 from src.stats_dp.constant import radio_to_weight
-from src.stats_dp.request_class import Sum, Mean, Ratio, Quantile
+from src.stats_dp.request_class import Sum, Mean, Ratio, Quantile, Query
 import yaml
 import operator
 import os
@@ -14,15 +13,50 @@ import itertools
 from functools import reduce
 import cvxpy as cp
 from shiny import ui
-from typing import Optional, Any, Sequence, Union
+from typing import Optional, Sequence, Union, FrozenSet
 import time
+import re
+
+OPS = ["==", "!=", ">=", "<=", ">", "<"]
 
 
-def optimisation_chaine(
-    dict_query: dict[str, dict[str, Any]], modalite, budget_total
-) -> dict[str, dict[str, Any]]:
+def extract_columns_from_filter(filter_expr: str) -> set[str]:
+    """
+    Extracts all column names used in a filter expression string.
 
-    filtres_uniques = set(query.filtre for query in dict_query.values())
+    Args:
+        filter_expr (str): A filter string using '&' and '|' operators,
+            e.g. "age > 18 & gender == 'M'".
+
+    Returns:
+        set[str]: A set of column names referenced in the filter.
+    """
+    if not filter_expr.strip():
+        raise ValueError("The filter expr is empty.")
+
+    tokens = re.split(r'(\s+\&\s+|\s+\|\s+)', filter_expr)
+    column_names = set()
+
+    for token in tokens:
+        token = token.strip()
+        if token in {"&", "|"} or not token:
+            continue
+        for op_str in OPS:
+            if op_str in token:
+                left, _ = token.split(op_str, 1)
+                column = left.strip()
+                column_names.add(column)
+                break
+    return column_names
+
+
+def add_variance(
+    dict_query: dict[str, Query],
+    key_values: dict[str, list[str]],
+    budget_total: float
+) -> dict[str, Query]:
+
+    filtres_uniques = set(query.filter_expr for query in dict_query.values())
     variables_uniques = set(getattr(query, "variable", None) for query in dict_query.values())
 
     requetes_finales = {}
@@ -31,17 +65,544 @@ def optimisation_chaine(
         for variable in variables_uniques:
             query_filtre_variable = {
                 k: v for k, v in dict_query.items()
-                if getattr(v, "variable", None) == variable and v.filtre == filtre
+                if getattr(v, "variable", None) == variable and v.filter_expr == filtre
             }
-            query_filtre_variable_opt = optimization_boosted(
-                dict_query=query_filtre_variable, modalite=modalite, budget_total=budget_total
+            query_filtre_variable_opt = calcul_variance(
+                dict_query=query_filtre_variable, key_values=key_values, budget_total=budget_total
             )
             requetes_finales.update(query_filtre_variable_opt)
 
     return requetes_finales
 
 
-def save_yaml_metadata_from_dataframe(lf: pl.DataFrame, dataset_name: str = "dataset") -> None:
+def add_confidence_interval(
+    lf: pl.LazyFrame,
+    quantile_queries: dict[str, Query],
+    rho_budget: float
+) -> dict[str, Query]:
+
+    unique_filters = set(query.filter_expr for query in quantile_queries.values())
+    unique_variables = set(query.variable for query in quantile_queries.values())
+
+    for filter_value in unique_filters:
+        for variable in unique_variables:
+            selected_queries = {
+                k: v for k, v in quantile_queries.items()
+                if v.variable == variable and v.filter_expr == filter_value
+            }
+
+            for query_key, query in selected_queries.items():
+                epsilon = np.sqrt(8 * rho_budget * query.weight)
+                true_data = query.execute(lf, use_bounds=False)
+                confidence_interval = compute_quantile_confidence_interval(
+                    lf, query, epsilon, true_data
+                )
+                quantile_queries[query_key].scale = confidence_interval
+
+    return quantile_queries
+
+
+# Estimation de l'incertitude (variance corrigée) via méthode boostée
+def calcul_variance(
+    key_values: dict[str, list[str]],
+    dict_query: dict[str, Query],
+    budget_total: float
+) -> dict[str, Query]:
+    """
+    Calcule la variance corrigée de beta sous contraintes, met à jour dict_query avec 'scale'.
+    """
+    liste_requests = [d.grouping_set for d in dict_query.values()]
+    nb_modalite = {k: len(v) for k, v in key_values.items()}
+    X, R, X_df_infos = MCG(liste_requests, key_values)
+
+    dict_request = {key: {"nb_cellule": produit_modalites(query.grouping_set, nb_modalite), "sigma2": query.precision_dp(budget_total)} for key, query in dict_query.items()}
+
+    # Matrice de variance Omega (hétéroscédastique)
+    sigma2 = np.array(list(itertools.chain.from_iterable(
+        [v["sigma2"]] * v["nb_cellule"] for v in dict_request.values()
+    )))
+    Omega_inv = np.diag(1 / sigma2)
+
+    # Matrice H = X^T Omega^{-1} X
+    H = X.T @ Omega_inv @ X
+    H_inv = np.linalg.inv(H)
+
+    # Projection liée à la contrainte R beta = 0
+    RHinv = R @ H_inv
+    middle_term = np.linalg.inv(RHinv @ R.T)
+    correction = H_inv @ R.T @ middle_term @ RHinv
+
+    # Variance corrigée de beta_hat sous contrainte R beta = 0
+    V_beta_constrained = H_inv - correction
+
+    V_Xbeta_constrained = X @ V_beta_constrained @ X.T
+    var_Xbeta_constrained = np.diag(V_Xbeta_constrained)
+
+    index = 0
+    # Création du mapping entre frozenset (clé dans dict_request) et la clé d'origine de poids
+
+    # Calcul scale par requête
+    for key in dict_request:
+        nb = dict_request[key]["nb_cellule"]
+        dict_query[key].scale = np.sqrt(var_Xbeta_constrained[index])
+        index += nb
+    return dict_query
+
+
+# ------------------------------------------
+# Construction des matrices X (design) et R (contraintes)
+def MCG(
+    liste_requests: list[Query],
+    key_values: dict[str, list[str]]
+) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
+    """
+    Construit la matrice de design X, la matrice de contraintes R,
+    et un DataFrame annoté des requêtes (X_df_infos).
+
+    Args:
+        liste_requests : liste de frozensets représentant les groupements.
+        modalite : dict {variable: [modalités]}.
+
+    Returns:
+        X : matrice numpy (n x p)
+        R : matrice numpy (r x p) des contraintes linéaires
+        X_df_infos : DataFrame avec informations sur chaque ligne de X
+    """
+    nb_modalite = {k: len(v) for k, v in key_values.items()}
+
+    # Les feuilles sont les groupements qui ne sont inclus dans aucun autre
+    feuilles = [req for req in liste_requests if not any(req < other for other in liste_requests)]
+
+    p = sum(produit_modalites(fset, nb_modalite) for fset in feuilles)
+    n = sum(produit_modalites(fset, nb_modalite) for fset in liste_requests)
+
+    # Construction des noms des coefficients beta (liste)
+    beta_names = []
+    df_par_requete = {}
+
+    def beta_label(vars_names, values):
+        return "β[" + ", ".join(f"{v}={val}" for v, val in zip(vars_names, values)) + "]"
+
+    # Pré-calcul des DataFrames pour chaque feuille (modalités et noms beta)
+    for req in feuilles:
+        sorted_vars = sorted(req)
+        domains = [range(nb_modalite[v]) for v in sorted_vars]
+        combos = list(product(*domains))
+        betas = [beta_label(sorted_vars, vals) for vals in combos]
+        beta_names.extend(betas)
+        df_par_requete[req] = pd.DataFrame(combos, columns=sorted_vars).assign(value=betas)
+
+    # Construction de X et X_df_infos
+    X = np.zeros((n, p), dtype=int)
+    ligne_courante = 0
+    request_lines = []
+
+    for req in liste_requests:
+        for max_req in feuilles:
+            if req <= max_req:
+                df = df_par_requete[max_req].copy()
+                if len(req) > 0:
+                    grouped = df.groupby(sorted(req))["value"].apply(lambda x: ' + '.join(x)).reset_index()
+                else:
+                    grouped = pd.DataFrame({'value': [' + '.join(df["value"])]})
+
+                for _, row in grouped.iterrows():
+                    for b in row["value"].split(" + "):
+                        X[ligne_courante, beta_names.index(b)] = 1
+
+                    if len(req) > 0:
+                        dico_modalites = row[sorted(req)].to_dict()
+                        dico_modalites_nom = {var: key_values[var][val] for var, val in dico_modalites.items()}
+                    else:
+                        dico_modalites_nom = {}
+
+                    request_lines.append({"requête": req, **dico_modalites_nom})
+                    ligne_courante += 1
+                break
+
+    X_df_infos = pd.DataFrame(request_lines)
+
+    # Construction matrice R (contraintes) : égalité entre coefficients beta sur intersections
+    R_rows = []
+
+    for req1, req2 in combinations(feuilles, 2):
+        inter = req1 & req2
+        df1, df2 = df_par_requete[req1], df_par_requete[req2]
+
+        if not inter:
+            row = np.zeros(len(beta_names))
+            for b in df1["value"]:
+                row[beta_names.index(b)] = 1
+            for b in df2["value"]:
+                row[beta_names.index(b)] = -1
+            R_rows.append(row)
+            continue
+
+        grouped1 = df1.groupby(list(inter))["value"].apply(list)
+        grouped2 = df2.groupby(list(inter))["value"].apply(list)
+        common_modalities = grouped1.index.intersection(grouped2.index)
+
+        for modality in common_modalities:
+            row = np.zeros(len(beta_names))
+            for b in grouped1[modality]:
+                row[beta_names.index(b)] = 1
+            for b in grouped2[modality]:
+                row[beta_names.index(b)] = -1
+            R_rows.append(row)
+
+    R = np.vstack(R_rows) if R_rows else np.empty((0, len(beta_names)))
+
+    # Supprime les contraintes dépendantes (ligne linéairement dépendante)
+    def remove_dependent_rows_qr(R, tol=1e-10):
+        if R.shape[0] == 0:
+            return R
+        Q, R_qr, P = qr(R.T, pivoting=True)
+        rank = np.sum(np.abs(np.diag(R_qr)) > tol)
+        independent_indices = P[:rank]
+        return R[independent_indices]
+
+    R = remove_dependent_rows_qr(R)
+
+    return X, R, X_df_infos
+
+
+# ------------------------------------------
+# Utils: produit des modalités pour un frozenset
+def produit_modalites(
+    fset: FrozenSet,
+    nb_modalite: dict[str, int]
+) -> int:
+    if not fset:
+        return 1
+    return reduce(operator.mul, (nb_modalite[v] for v in fset), 1)
+
+
+############################################
+
+# ------------------------------------------
+# Calcul des coefficients beta via moindres carrés pondérés sous contraintes
+def calcul_MCG(
+    results_store: dict[str, pd.DataFrame],
+    key_values: dict[str, list[str]],
+    dict_query: dict[str, Query],
+    type_req: str,
+    pos: bool = True
+) -> dict[str, pd.DataFrame]:
+    """
+    Calcule les coefficients beta via MCG et met à jour results_store.
+    Version adaptée à Polars.
+
+    Args:
+        results_store: dictionnaire contenant les résultats à mettre à jour.
+        key_values: dictionnaire {variable: [modalités disponibles]}.
+        dict_query: dictionnaire des requêtes avec leur groupement.
+        type_req: nom de la colonne à mettre à jour.
+        pos: si True, impose la positivité des coefficients (MCG+).
+
+    Returns:
+        Le dictionnaire results_store mis à jour, ou None si aucun calcul n'est effectué.
+    """
+    liste_requests = [d.grouping_set for d in dict_query.values()]
+
+    X, R, X_df_infos = MCG(liste_requests, key_values)
+
+    # Polars compatible version of ajouter_colonne_value
+    X_df_infos = ajouter_colonne_value(X_df_infos, dict_query, results_store)
+
+    if len(liste_requests) == 1:
+        X_df_infos[type_req + "_MCG"] = X_df_infos["value"].values
+        results_modif = mettre_a_jour_results_store(X_df_infos, dict_query, results_store, col_source=type_req + "_MCG", col_cible=type_req)
+        return results_modif
+
+    # Pondération par sigma2
+    sigma = X_df_infos["sigma2"].values
+    W = np.diag(1 / sigma)
+    y = X_df_infos["value"].values
+    Omega_inv = W.T @ W
+    Omega_inv = Omega_inv / Omega_inv.diagonal().max()  # Normalisation
+
+    # Résolution avec cvxpy
+    beta = cp.Variable(X.shape[1])
+    objective = cp.Minimize(cp.quad_form(X @ beta - y, Omega_inv))
+    contraintes = []
+
+    if pos:
+        contraintes.append(beta >= 0)
+
+    if R.size > 0:
+        contraintes.append(R @ beta == 0)
+
+    prob = cp.Problem(objective, contraintes)
+    prob.solve(max_iter=100000)
+
+    if prob.status not in ["optimal", "optimal_inaccurate"]:
+        raise RuntimeError("Problème d'optimisation non résolu")
+
+    beta_val = beta.value
+
+    # Ajout dans X_df_infos des valeurs prédites par MCG
+    X_df_infos[type_req + "_MCG"] = X @ beta_val
+
+    # Mise à jour results_store
+    # print(X_df_infos)
+    results_modif = mettre_a_jour_results_store(
+        X_df_infos, dict_query, results_store,
+        col_source=f"{type_req}_MCG", col_cible=type_req
+    )
+    return results_modif
+
+
+# ------------------------------------------
+# Intégration des valeurs observées et variances dans le DataFrame info
+def ajouter_colonne_value(
+    x_df_info: pd.DataFrame,
+    data_query: dict[str, Query],
+    results_store: dict[str, pd.DataFrame]
+) -> pd.DataFrame:
+    """
+    Ajoute les colonnes "value" et "sigma2" dans X_df_infos à partir des résultats
+    et des requêtes.
+    """
+    X_df_infos = x_df_info.copy()
+    X_df_infos["value"] = np.nan
+    X_df_infos["sigma2"] = np.nan
+
+    for key, df_valeurs in results_store.items():
+        groupement = data_query[key].grouping_set
+
+        # Identifier la colonne valeur dans le DataFrame
+        colonnes_valeur = ['count', 'sum', 'value']
+        valeur_col = next((col for col in colonnes_valeur if col in df_valeurs.columns), None)
+        if valeur_col is None:
+            raise ValueError(f"Aucune colonne de valeur trouvée dans le résultat '{key}'.")
+
+        masque = X_df_infos["requête"] == groupement
+        if not masque.any():
+            continue
+
+        sous_df = X_df_infos[masque]
+
+        if len(groupement) == 0:
+            if len(df_valeurs) != 1:
+                raise ValueError(f"Résultat sans groupement '{key}' contient plusieurs lignes.")
+            valeur = df_valeurs[valeur_col].iloc[0]
+            X_df_infos.loc[masque, "value"] = valeur
+        else:
+            jointure = pd.merge(sous_df, df_valeurs, how='left', on=list(groupement))
+            X_df_infos.loc[masque, "value"] = jointure[valeur_col].values
+
+        X_df_infos.loc[masque, "sigma2"] = data_query[key].sigma2
+
+    return X_df_infos
+
+
+# ------------------------------------------
+# Mise à jour du dictionnaire results_store avec les valeurs recalculées
+def mettre_a_jour_results_store(
+    x_df_info: pd.DataFrame,
+    data_query: dict[str, Query],
+    results_store: dict[str, pd.DataFrame],
+    col_source: str = "value_MCG",
+    col_cible: str = "count"
+) -> dict[str, pd.DataFrame]:
+    """
+    Met à jour les DataFrames dans results_store avec les valeurs calculées.
+    """
+    results_modif = {}
+
+    for key, df_valeurs in results_store.items():
+
+        groupement = data_query[key].grouping_set
+        masque = x_df_info["requête"] == groupement
+        if not masque.any():
+            continue
+
+        sous_df_info = x_df_info[masque]
+
+        if len(groupement) == 0:
+            if len(sous_df_info) != 1 or len(df_valeurs) != 1:
+                raise ValueError(f"Incohérence dans '{key}': {len(sous_df_info)} lignes dans X_df_infos, {len(df_valeurs)} dans df_valeurs.")
+            valeur = sous_df_info[col_source].iloc[0]
+            df_valeurs[col_cible] = [valeur]
+        else:
+            jointure = pd.merge(df_valeurs, sous_df_info[list(groupement) + [col_source]], how="left", on=list(groupement))
+            df_valeurs[col_cible] = jointure[col_source]
+
+        results_modif[key] = df_valeurs
+
+    return results_modif
+
+
+##########################################################################################
+
+def rho_from_eps_delta(
+    epsilon: float,
+    delta: float
+) -> float:
+    if not (0 < delta < 1):
+        raise ValueError("delta must be in (0, 1)")
+    if epsilon <= 0:
+        raise ValueError("epsilon must be positive")
+
+    log_term = np.log(1 / delta)
+    sqrt_term = np.sqrt(log_term * (epsilon + log_term))
+    rho = 2 * log_term + epsilon - 2 * sqrt_term
+    return rho
+
+
+def eps_from_rho_delta(
+    rho: float,
+    delta: float
+) -> float:
+    if rho <= 0 or delta <= 0 or delta >= 1:
+        raise ValueError("rho must be positive and delta in (0, 1)")
+
+    def equation(y: float, rho: float, delta: float):
+        denom = delta * (1 + (y - rho) / (2 * rho))
+        if denom <= 0:
+            return np.inf  # force fsolve à éviter cette zone
+        if rho * np.log(1 / denom) <= 0:
+            return np.inf  # force fsolve à éviter cette zone
+        sqrt_term = np.sqrt(rho * np.log(1 / denom))
+        return y - (rho + 2 * sqrt_term)
+
+    epsilon_base = rho + 2 * np.sqrt(rho * np.log(1 / delta))
+    y0 = rho + 1
+
+    try:
+        result, info, ier, _ = fsolve(equation, y0, args=(rho, delta), full_output=True)
+        if ier == 1 and result[0] >= 0:
+            return result[0]
+        else:
+            return epsilon_base
+    except Exception:
+        return epsilon_base
+
+
+def manual_quantile_score(
+    data: Sequence[float],
+    candidats: Sequence[float],
+    alpha: float,
+    et_si: bool = False
+) -> tuple[np.ndarray, int]:
+    """
+    Calcule une mesure de "distance quantile" pour une liste de candidats
+    par rapport au quantile alpha d'une distribution donnée.
+    """
+
+    def get_fractional_alpha(alpha: float, et_si: bool) -> tuple[int, int]:
+        known_alphas = {0: (0, 1), 0.25: (1, 4), 0.5: (1, 2), 0.75: (3, 4), 1: (1, 1)}
+        if et_si or alpha not in known_alphas:
+            return int(np.floor(alpha * 10_000)), 10_000
+        return known_alphas[alpha]
+
+    alpha_num, alpha_denum = get_fractional_alpha(alpha, et_si)
+    max_alpha = max(alpha_num, alpha_denum - alpha_num)
+    data_len = len(data)
+
+    if data_len == 0:
+        return np.array([]), max_alpha
+
+    sorted_data = np.sort(data)
+    scores = []
+
+    for c in candidats:
+        # nombre d'éléments < c : recherche d'indice d'insertion à gauche
+        n_less = np.searchsorted(sorted_data, c, side='left')
+        # nombre d'éléments == c : différence d'indices d'insertion droite et gauche
+        n_equal = np.searchsorted(sorted_data, c, side='right') - n_less
+
+        score = alpha_denum * n_less - alpha_num * (data_len - n_equal)
+        scores.append(abs(score))
+
+    return np.array(scores), max_alpha
+
+
+def get_weights(
+    request: dict[str, Query],
+    dict_values: dict[str, str]
+) -> dict[str, float]:
+    # Étape 1 : récupération des poids bruts
+    raw_weights = {
+        key: radio_to_weight.get(float(dict_values[key]), 0)
+        for key in request.keys()
+    }
+
+    # Étape 2 : normalisation initiale
+    total = sum(raw_weights.values())
+    if total > 0:
+        weights = {k: v / total for k, v in raw_weights.items()}
+    else:
+        weights = {k: 0 for k in raw_weights}
+
+    # Étape 3 : ajustement selon le type de requête
+    adjustment_factors = {
+        Mean: 2,
+        Sum: 2,
+        Ratio: 3,
+    }
+
+    for k, v in weights.items():
+        factor = adjustment_factors.get(type(request[k]), 1)
+        weights[k] = v / factor
+
+    return weights
+
+
+def load_data(
+    path: str,
+    storage_options: Optional[dict[str, str]] = None
+) -> pl.LazyFrame:
+
+    start = time.time()
+    read_kwargs = {"storage_options": storage_options} if path.startswith("s3://") else {}
+    lf = pl.read_parquet(path, **read_kwargs).lazy()
+
+    if "geometry" in lf.collect_schema():
+        lf = lf.drop("geometry")
+
+    print(f"✅ Lecture terminée en {time.time() - start:.2f} secondes.")
+    return lf
+
+
+def extract_column_names_from_choices(choices: dict) -> list[str]:
+    """À partir du dict retourné par `variable_choices`, extrait la liste des noms de colonnes."""
+    columns = []
+    for key, val in choices.items():
+        if isinstance(val, dict):  # sections comme "Qualitatives" ou "Quantitatives"
+            columns.extend(val.values())
+    return columns
+
+
+def extract_bounds(
+    metadata: dict,
+    var_name: str
+) -> Union[list[float], None]:
+
+    if 'columns' not in metadata or var_name not in metadata['columns']:
+        return None
+    col_meta = metadata['columns'][var_name]
+    min_val = col_meta.get('min')
+    max_val = col_meta.get('max')
+    if min_val is not None and max_val is not None:
+        return [float(min_val), float(max_val)]
+    return None
+
+
+def assert_or_notify(
+    condition: bool,
+    message: str
+) -> bool:
+    if not condition:
+        ui.notification_show(f"❌ {message}", type="error")
+        return False
+    return True
+
+
+def save_yaml_metadata_from_dataframe(
+    lf: pl.DataFrame,
+    dataset_name: str = "dataset"
+) -> None:
     # Résolution anticipée du schéma et des noms de colonnes
     schema = lf.collect_schema()
     colnames = list(schema.keys())
@@ -104,12 +665,18 @@ def load_yaml_metadata(dataset_name: str = "dataset") -> dict:
     return metadata
 
 
-def intervalle_confiance_quantile(dataset: pl.LazyFrame, req: dict, epsilon: float, vrai_tableau: pl.DataFrame):
+def compute_quantile_confidence_interval(
+    dataset: pl.LazyFrame,
+    req: Quantile,
+    epsilon: float,
+    vrai_tableau: pl.DataFrame
+) -> dict[str, float]:
+
     variable = req.variable
     bounds_min, bounds_max = req.bounds
-    alphas = [float(a) for a in req.alpha]
-    nb_candidats = int(req.nb_candidats)
-    by = req.by
+    alphas = [float(a) for a in req.alphas]
+    nb_candidats = int(req.num_candidates)
+    by = req.group_by
 
     candidats = np.linspace(bounds_min, bounds_max, nb_candidats + 1)
     precisions_by_alpha = {alpha: [] for alpha in alphas}
@@ -188,7 +755,10 @@ def intervalle_confiance_quantile(dataset: pl.LazyFrame, req: dict, epsilon: flo
     }
 
 
-def generate_yaml_metadata_from_dataframe(lf: pl.DataFrame, dataset_name: str = "dataset") -> str:
+def generate_yaml_metadata_from_dataframe(
+    lf: pl.DataFrame,
+    dataset_name: str = "dataset"
+) -> str:
 
     # Résolution anticipée du schéma et des noms de colonnes
     schema = lf.collect_schema()
@@ -239,472 +809,5 @@ def generate_yaml_metadata_from_dataframe(lf: pl.DataFrame, dataset_name: str = 
         metadata['columns'][col] = col_meta
 
     yaml_str = yaml.dump(metadata, sort_keys=False, allow_unicode=True)
+    print(type(yaml_str))
     return yaml_str
-
-
-# ------------------------------------------
-# Utils: produit des modalités pour un frozenset
-def produit_modalites(fset, nb_modalite):
-    if not fset:
-        return 1
-    return reduce(operator.mul, (nb_modalite[v] for v in fset), 1)
-
-
-# ------------------------------------------
-# Construction des matrices X (design) et R (contraintes)
-def MCG(liste_requests, modalite):
-    """
-    Construit la matrice de design X, la matrice de contraintes R,
-    et un DataFrame annoté des requêtes (X_df_infos).
-
-    Args:
-        liste_requests : liste de frozensets représentant les groupements.
-        modalite : dict {variable: [modalités]}.
-
-    Returns:
-        X : matrice numpy (n x p)
-        R : matrice numpy (r x p) des contraintes linéaires
-        X_df_infos : DataFrame avec informations sur chaque ligne de X
-    """
-    nb_modalite = {k: len(v) for k, v in modalite.items()}
-
-    # Les feuilles sont les groupements qui ne sont inclus dans aucun autre
-    feuilles = [req for req in liste_requests if not any(req < other for other in liste_requests)]
-
-    p = sum(produit_modalites(fset, nb_modalite) for fset in feuilles)
-    n = sum(produit_modalites(fset, nb_modalite) for fset in liste_requests)
-
-    # Construction des noms des coefficients beta (liste)
-    beta_names = []
-    df_par_requete = {}
-
-    def beta_label(vars_names, values):
-        return "β[" + ", ".join(f"{v}={val}" for v, val in zip(vars_names, values)) + "]"
-
-    # Pré-calcul des DataFrames pour chaque feuille (modalités et noms beta)
-    for req in feuilles:
-        sorted_vars = sorted(req)
-        domains = [range(nb_modalite[v]) for v in sorted_vars]
-        combos = list(product(*domains))
-        betas = [beta_label(sorted_vars, vals) for vals in combos]
-        beta_names.extend(betas)
-        df_par_requete[req] = pd.DataFrame(combos, columns=sorted_vars).assign(value=betas)
-
-    # Construction de X et X_df_infos
-    X = np.zeros((n, p), dtype=int)
-    ligne_courante = 0
-    request_lines = []
-
-    for req in liste_requests:
-        for max_req in feuilles:
-            if req <= max_req:
-                df = df_par_requete[max_req].copy()
-                if len(req) > 0:
-                    grouped = df.groupby(sorted(req))["value"].apply(lambda x: ' + '.join(x)).reset_index()
-                else:
-                    grouped = pd.DataFrame({'value': [' + '.join(df["value"])]})
-
-                for _, row in grouped.iterrows():
-                    for b in row["value"].split(" + "):
-                        X[ligne_courante, beta_names.index(b)] = 1
-
-                    if len(req) > 0:
-                        dico_modalites = row[sorted(req)].to_dict()
-                        dico_modalites_nom = {var: modalite[var][val] for var, val in dico_modalites.items()}
-                    else:
-                        dico_modalites_nom = {}
-
-                    request_lines.append({"requête": req, **dico_modalites_nom})
-                    ligne_courante += 1
-                break
-
-    X_df_infos = pd.DataFrame(request_lines)
-
-    # Construction matrice R (contraintes) : égalité entre coefficients beta sur intersections
-    R_rows = []
-
-    for req1, req2 in combinations(feuilles, 2):
-        inter = req1 & req2
-        df1, df2 = df_par_requete[req1], df_par_requete[req2]
-
-        if not inter:
-            row = np.zeros(len(beta_names))
-            for b in df1["value"]:
-                row[beta_names.index(b)] = 1
-            for b in df2["value"]:
-                row[beta_names.index(b)] = -1
-            R_rows.append(row)
-            continue
-
-        grouped1 = df1.groupby(list(inter))["value"].apply(list)
-        grouped2 = df2.groupby(list(inter))["value"].apply(list)
-        common_modalities = grouped1.index.intersection(grouped2.index)
-
-        for modality in common_modalities:
-            row = np.zeros(len(beta_names))
-            for b in grouped1[modality]:
-                row[beta_names.index(b)] = 1
-            for b in grouped2[modality]:
-                row[beta_names.index(b)] = -1
-            R_rows.append(row)
-
-    R = np.vstack(R_rows) if R_rows else np.empty((0, len(beta_names)))
-
-    # Supprime les contraintes dépendantes (ligne linéairement dépendante)
-    def remove_dependent_rows_qr(R, tol=1e-10):
-        if R.shape[0] == 0:
-            return R
-        Q, R_qr = np.linalg.qr(R.T)
-        independent = np.abs(R_qr).sum(axis=1) > tol
-        return R[independent]
-
-    R = remove_dependent_rows_qr(R)
-
-    return X, R, X_df_infos
-
-
-# ------------------------------------------
-# Intégration des valeurs observées et variances dans le DataFrame info
-def ajouter_colonne_value(x_df_info, data_query, results_store):
-    """
-    Ajoute les colonnes "value" et "sigma2" dans X_df_infos à partir des résultats
-    et des requêtes.
-    """
-    X_df_infos = x_df_info.copy()
-    X_df_infos["value"] = np.nan
-    X_df_infos["sigma2"] = np.nan
-
-    for key, df_valeurs in results_store.items():
-        groupement = data_query[key].groupement
-
-        # Identifier la colonne valeur dans le DataFrame
-        colonnes_valeur = ['count', 'sum', 'value']
-        valeur_col = next((col for col in colonnes_valeur if col in df_valeurs.columns), None)
-        if valeur_col is None:
-            raise ValueError(f"Aucune colonne de valeur trouvée dans le résultat '{key}'.")
-
-        masque = X_df_infos["requête"] == groupement
-        if not masque.any():
-            continue
-
-        sous_df = X_df_infos[masque]
-
-        if len(groupement) == 0:
-            if len(df_valeurs) != 1:
-                raise ValueError(f"Résultat sans groupement '{key}' contient plusieurs lignes.")
-            valeur = df_valeurs[valeur_col].iloc[0]
-            X_df_infos.loc[masque, "value"] = valeur
-        else:
-            jointure = pd.merge(sous_df, df_valeurs, how='left', on=list(groupement))
-            X_df_infos.loc[masque, "value"] = jointure[valeur_col].values
-
-        X_df_infos.loc[masque, "sigma2"] = data_query[key].sigma2
-
-    return X_df_infos
-
-
-# ------------------------------------------
-# Mise à jour du dictionnaire results_store avec les valeurs recalculées
-def mettre_a_jour_results_store(x_df_info, data_query, results_store, col_source="value_MCG", col_cible="count"):
-    """
-    Met à jour les DataFrames dans results_store avec les valeurs calculées.
-    """
-    results_modif = {}
-
-    for key, df_valeurs in results_store.items():
-
-        groupement = data_query[key].groupement
-        masque = x_df_info["requête"] == groupement
-        if not masque.any():
-            continue
-
-        sous_df_info = x_df_info[masque]
-
-        if len(groupement) == 0:
-            if len(sous_df_info) != 1 or len(df_valeurs) != 1:
-                raise ValueError(f"Incohérence dans '{key}': {len(sous_df_info)} lignes dans X_df_infos, {len(df_valeurs)} dans df_valeurs.")
-            valeur = sous_df_info[col_source].iloc[0]
-            df_valeurs[col_cible] = [valeur]
-        else:
-            jointure = pd.merge(df_valeurs, sous_df_info[list(groupement) + [col_source]], how="left", on=list(groupement))
-            df_valeurs[col_cible] = jointure[col_source]
-
-        results_modif[key] = df_valeurs
-
-    return results_modif
-
-
-# ------------------------------------------
-# Calcul des coefficients beta via moindres carrés pondérés sous contraintes
-def calcul_MCG(results_store, modalite, dict_query, type_req, pos=True):
-    """
-    Calcule les coefficients beta via MCG et met à jour results_store.
-    Version adaptée à Polars.
-    """
-    liste_requests = [d.groupement for d in dict_query.values()]
-    if len(liste_requests) == 0:
-        return None
-
-    X, R, X_df_infos = MCG(liste_requests, modalite)
-
-    # Polars compatible version of ajouter_colonne_value
-    X_df_infos = ajouter_colonne_value(X_df_infos, dict_query, results_store)
-
-    if len(liste_requests) == 1:
-        X_df_infos[type_req + "_MCG"] = X_df_infos["value"].values
-        results_modif = mettre_a_jour_results_store(X_df_infos, dict_query, results_store, col_source=type_req + "_MCG", col_cible=type_req)
-        return results_modif
-
-    # Pondération par sigma2
-    sigma = X_df_infos["sigma2"].values
-    W = np.diag(1 / sigma)
-    y = X_df_infos["value"].values
-    Omega_inv = W.T @ W
-    Omega_inv = Omega_inv / Omega_inv.diagonal().max()  # Normalisation
-
-    # Résolution avec cvxpy
-    beta = cp.Variable(X.shape[1])
-    objective = cp.Minimize(cp.quad_form(X @ beta - y, Omega_inv))
-    contraintes = []
-
-    if pos:
-        contraintes.append(beta >= 0)
-
-    if R.size > 0:
-        contraintes.append(R @ beta == 0)
-
-    prob = cp.Problem(objective, contraintes)
-    prob.solve(max_iter=100000)
-
-    if prob.status not in ["optimal", "optimal_inaccurate"]:
-        raise RuntimeError("Problème d'optimisation non résolu")
-
-    beta_val = beta.value
-
-    # Ajout dans X_df_infos des valeurs prédites par MCG
-    X_df_infos[type_req + "_MCG"] = X @ beta_val
-
-    # Mise à jour results_store
-    # print(X_df_infos)
-    results_modif = mettre_a_jour_results_store(
-        X_df_infos, dict_query, results_store,
-        col_source=f"{type_req}_MCG", col_cible=type_req
-    )
-    return results_modif
-
-
-# ------------------------------------------
-# Estimation de l'incertitude (variance corrigée) via méthode boostée
-def optimization_boosted(modalite, dict_query, budget_total):
-    """
-    Calcule la variance corrigée de beta sous contraintes, met à jour dict_query avec 'scale'.
-    """
-    liste_requests = [d.groupement for d in dict_query.values()]
-    nb_modalite = {k: len(v) for k, v in modalite.items()}
-    X, R, X_df_infos = MCG(liste_requests, modalite)
-
-    dict_request = {key: {"nb_cellule": produit_modalites(query.groupement, nb_modalite), "sigma2": query.precision_dp(budget_total)} for key, query in dict_query.items()}
-
-    # Matrice de variance Omega (hétéroscédastique)
-    sigma2 = np.array(list(itertools.chain.from_iterable(
-        [v["sigma2"]] * v["nb_cellule"] for v in dict_request.values()
-    )))
-    Omega_inv = np.diag(1 / sigma2)
-
-    # Matrice H = X^T Omega^{-1} X
-    H = X.T @ Omega_inv @ X
-    H_inv = np.linalg.inv(H)
-
-    # Projection liée à la contrainte R beta = 0
-    RHinv = R @ H_inv
-    middle_term = np.linalg.inv(RHinv @ R.T)
-    correction = H_inv @ R.T @ middle_term @ RHinv
-
-    # Variance corrigée de beta_hat sous contrainte R beta = 0
-    V_beta_constrained = H_inv - correction
-
-    V_Xbeta_constrained = X @ V_beta_constrained @ X.T
-    var_Xbeta_constrained = np.diag(V_Xbeta_constrained)
-
-    index = 0
-    # Création du mapping entre frozenset (clé dans dict_request) et la clé d'origine de poids
-
-    # Calcul scale par requête
-    for key in dict_request:
-        nb = dict_request[key]["nb_cellule"]
-        dict_query[key].scale = np.sqrt(var_Xbeta_constrained[index])
-        index += nb
-    return dict_query
-
-
-def create_context(
-    CONTEXT_PARAM: dict[str, Any], budget: float, requete: dict[str, dict[str, Any]]
-) -> tuple[Union[dp.Context, None], Union[dp.Context, None]]:
-
-    # Séparer les poids selon le type de requête
-    poids_rho = [req.poids for req in requete.values() if not isinstance(req, Quantile) ]
-    poids_eps = [req.poids for req in requete.values() if isinstance(req, Quantile)]
-
-    somme_rho = sum(poids_rho)
-    somme_eps = sum(poids_eps)
-
-    budget_rho = budget * somme_rho
-    budget_eps = np.sqrt(8 * budget * somme_eps)
-
-    def create_context(
-        budget_val: float, poids: list[float], is_rho: bool
-    ) -> Union[dp.Context, None]:
-
-        if budget_val == 0:
-            return None
-        return dp.Context.compositor(
-            **CONTEXT_PARAM,
-            privacy_loss=dp.loss_of(rho=budget_val) if is_rho else dp.loss_of(epsilon=budget_val),
-            split_by_weights=poids
-        )
-
-    context_rho = create_context(budget_rho, poids_rho, is_rho=True)
-    context_eps = create_context(budget_eps, poids_eps, is_rho=False)
-
-    return context_rho, context_eps
-
-
-def rho_from_eps_delta(epsilon: float, delta: float) -> float:
-    if not (0 < delta < 1):
-        raise ValueError("delta must be in (0, 1)")
-    if epsilon <= 0:
-        raise ValueError("epsilon must be positive")
-
-    log_term = np.log(1 / delta)
-    sqrt_term = np.sqrt(log_term * (epsilon + log_term))
-    rho = 2 * log_term + epsilon - 2 * sqrt_term
-    return rho
-
-
-def eps_from_rho_delta(rho: float, delta: float) -> float:
-    if rho <= 0 or delta <= 0 or delta >= 1:
-        raise ValueError("rho must be positive and delta in (0, 1)")
-
-    def equation(y: float, rho: float, delta: float):
-        denom = delta * (1 + (y - rho) / (2 * rho))
-        if denom <= 0:
-            return np.inf  # force fsolve à éviter cette zone
-        if rho * np.log(1 / denom) <= 0:
-            return np.inf  # force fsolve à éviter cette zone
-        sqrt_term = np.sqrt(rho * np.log(1 / denom))
-        return y - (rho + 2 * sqrt_term)
-
-    epsilon_base = rho + 2 * np.sqrt(rho * np.log(1 / delta))
-    y0 = rho + 1
-
-    try:
-        result, info, ier, _ = fsolve(equation, y0, args=(rho, delta), full_output=True)
-        if ier == 1 and result[0] >= 0:
-            return result[0]
-        else:
-            return epsilon_base
-    except Exception:
-        return epsilon_base
-
-
-def manual_quantile_score(
-    data: Sequence[float], candidats: Sequence[float], alpha: float, et_si: bool = False
-) -> tuple[np.ndarray, int]:
-    """
-    Calcule une mesure de "distance quantile" pour une liste de candidats
-    par rapport au quantile alpha d'une distribution donnée.
-    """
-
-    def get_fractional_alpha(alpha: float, et_si: bool) -> tuple[int, int]:
-        known_alphas = {0: (0, 1), 0.25: (1, 4), 0.5: (1, 2), 0.75: (3, 4), 1: (1, 1)}
-        if et_si or alpha not in known_alphas:
-            return int(np.floor(alpha * 10_000)), 10_000
-        return known_alphas[alpha]
-
-    alpha_num, alpha_denum = get_fractional_alpha(alpha, et_si)
-    max_alpha = max(alpha_num, alpha_denum - alpha_num)
-    data_len = len(data)
-
-    if data_len == 0:
-        return np.array([]), max_alpha
-
-    sorted_data = np.sort(data)
-    scores = []
-
-    for c in candidats:
-        # nombre d'éléments < c : recherche d'indice d'insertion à gauche
-        n_less = np.searchsorted(sorted_data, c, side='left')
-        # nombre d'éléments == c : différence d'indices d'insertion droite et gauche
-        n_equal = np.searchsorted(sorted_data, c, side='right') - n_less
-
-        score = alpha_denum * n_less - alpha_num * (data_len - n_equal)
-        scores.append(abs(score))
-
-    return np.array(scores), max_alpha
-
-
-def get_weights(request: dict[str, dict[str, Any]], dict_values: dict[str, str]) -> dict:
-    # Étape 1 : récupération des poids bruts
-    raw_weights = {
-        key: radio_to_weight.get(float(dict_values[key]), 0)
-        for key in request.keys()
-    }
-
-    # Étape 2 : normalisation initiale
-    total = sum(raw_weights.values())
-    if total > 0:
-        weights = {k: v / total for k, v in raw_weights.items()}
-    else:
-        weights = {k: 0 for k in raw_weights}
-
-    # Étape 3 : ajustement selon le type de requête
-    adjustment_factors = {
-        Mean: 2,
-        Sum: 2,
-        Ratio: 3,
-    }
-
-    for k, v in weights.items():
-        factor = adjustment_factors.get(type(request[k]), 1)
-        weights[k] = v / factor
-
-    return weights
-
-
-def load_data(path: str, storage_options: Optional[dict[str, str]] = None) -> pl.LazyFrame:
-    start = time.time()
-    read_kwargs = {"storage_options": storage_options} if path.startswith("s3://") else {}
-    lf = pl.read_parquet(path, **read_kwargs).lazy()
-
-    if "geometry" in lf.collect_schema():
-        lf = lf.drop("geometry")
-
-    print(f"✅ Lecture terminée en {time.time() - start:.2f} secondes.")
-    return lf
-
-
-def extract_column_names_from_choices(choices: dict) -> list[str]:
-    """À partir du dict retourné par `variable_choices`, extrait la liste des noms de colonnes."""
-    columns = []
-    for key, val in choices.items():
-        if isinstance(val, dict):  # sections comme "Qualitatives" ou "Quantitatives"
-            columns.extend(val.values())
-    return columns
-
-
-def extract_bounds(metadata: dict, var_name: str) -> list[float] | None:
-    if 'columns' not in metadata or var_name not in metadata['columns']:
-        return None
-    col_meta = metadata['columns'][var_name]
-    min_val = col_meta.get('min')
-    max_val = col_meta.get('max')
-    if min_val is not None and max_val is not None:
-        return [float(min_val), float(max_val)]
-    return None
-
-
-def assert_or_notify(condition: bool, message: str) -> bool:
-    if not condition:
-        ui.notification_show(f"❌ {message}", type="error")
-        return False
-    return True

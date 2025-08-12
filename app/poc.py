@@ -1,4 +1,4 @@
-from shiny import App, ui, render, reactive, module, Inputs, Outputs, Session
+from shiny import ui, render, reactive, module, Inputs, Outputs, Session
 from shinywidgets import render_plotly
 from pathlib import Path
 from datetime import datetime
@@ -48,8 +48,10 @@ from src.stats_dp.constant import (
     choix_quantile,
     borne_max_taille_dataset
 )
-from src.stats_dp.request_class import Count, Sum, Mean, Ratio, Quantile, parse_filter_string
-from src.stats_dp.pipeline_class import Pipeline
+from src.stats_dp.request_class import (
+    DatasetInfo, Count, Sum, Mean, Ratio, Quantile, parse_filter_expression
+)
+from src.stats_dp.pipeline_class import QueryPipeline
 
 dp.enable_features("contrib")
 
@@ -62,6 +64,14 @@ type_map = {
     "Comptage": Count,
     "Total": Sum,
     "Moyenne": Mean,
+    "Ratio": Ratio,
+    "Quantile": Quantile
+}
+
+mapping = {
+    "Count": Count,
+    "Sum": Sum,
+    "Mean": Mean,
     "Ratio": Ratio,
     "Quantile": Quantile
 }
@@ -128,11 +138,11 @@ def bloc_budget_server(
     type_req = session.ns
 
     def bloc_visible() -> bool:
-        return any(isinstance(req, type_map[type_req]) for req in req_pipeline().dict_req.values())
+        return any(isinstance(req, type_map[type_req]) for req in req_pipeline().queries.values())
 
     @reactive.calc
     def dataframe() -> pd.DataFrame:
-        df = requetes_pipeline_precision()[type_req].to_pandas()
+        df = requetes_pipeline_precision()[type_map[type_req].__name__].to_pandas()
         df["groupement"] = df["groupement"].apply(
             lambda x: ast.literal_eval(x) if isinstance(x, str) and x.startswith("(") else x
         )
@@ -306,8 +316,13 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     # Page Préparer ses requêtes
     @reactive.calc
-    def requetes_pipeline() -> Pipeline:
-        return Pipeline(requetes(), dataset(), contrib_individu, borne_max_taille_dataset)
+    def requetes_pipeline() -> QueryPipeline:
+        dataset_info = DatasetInfo(
+            lf=dataset(),
+            max_individual_contribution=contrib_individu,
+            max_dataset_size_bound=borne_max_taille_dataset
+        )
+        return QueryPipeline(requetes(), dataset_info)
 
     @reactive.calc
     def requetes_pipeline_precision():
@@ -463,7 +478,7 @@ def server(input: Inputs, output: Outputs, session: Session):
             requetes_instances = {}
             for name, params in data.items():
                 req_type = params.pop("type", None)
-                cls = type_map.get(req_type)
+                cls = mapping.get(req_type)
                 if not assert_or_notify(cls, "Type de requête inconnu"):
                     continue
                 try:
@@ -508,29 +523,30 @@ def server(input: Inputs, output: Outputs, session: Session):
         bounds_denom = extract_bounds(metadata_dict, variable_denom)
 
         # Vérification syntaxique du filtre
-        filtre_str = input.filtre()
-        if filtre_str:
+        filter_expr = input.filtre()
+        if filter_expr:
             try:
                 all_columns = extract_column_names_from_choices(variable_choices())
-                _ = parse_filter_string(filtre_str, columns=all_columns)
-            except Exception:
+                _ = parse_filter_expression(filter_expr, available_columns=all_columns)
+            except Exception as e:
                 text = (
                     "❌ Erreur dans le format du filtre : "
                     "vérifiez les opérateurs et les noms de variables"
                 )
                 ui.notification_show(text, type="error")
+                print(e)
                 return
 
         base_dict = {
             "type": type_req,
             "variable": variable,
             "bounds": bounds,
-            "by": sorted(input.group_by()),
-            "filtre": input.filtre(),
+            "group_by": sorted(input.group_by()),
+            "filter_expr": input.filtre(),
         }
 
         if type_req == 'Quantile':
-            alpha = sorted(input.alpha())
+            alphas = sorted(input.alpha())
 
             if not assert_or_notify(
                 nb_candidats,
@@ -545,14 +561,14 @@ def server(input: Inputs, output: Outputs, session: Session):
                 return
 
             if not assert_or_notify(
-                alpha,
+                alphas,
                 "Pas de quantile sélectionné"
             ):
                 return
 
             base_dict.update({
-                "alpha": alpha,
-                "nb_candidats": nb_candidats,
+                "alphas": alphas,
+                "num_candidates": nb_candidats,
             })
 
         elif type_req == 'Ratio':
@@ -562,9 +578,12 @@ def server(input: Inputs, output: Outputs, session: Session):
             ):
                 return
 
+            base_dict["numerator_variable"] = base_dict.pop("variable")
+            base_dict["numerator_bounds"] = base_dict.pop("bounds")
+
             base_dict.update({
-                "variable_denominateur": variable_denom,
-                "bounds_denominateur": bounds_denom
+                "denominator_variable": variable_denom,
+                "denominator_bounds": bounds_denom
             })
 
         # Supprimer "type" du dictionnaire (inutilisable pour les classes)
@@ -917,9 +936,9 @@ def server(input: Inputs, output: Outputs, session: Session):
 
         req_pipeline = requetes_pipeline()
 
-        with ui.Progress(min=0, max=len(req_pipeline.dict_query)) as p:
+        with ui.Progress(min=0, max=len(req_pipeline.internal_queries)) as p:
             p.set(0, message="Traitement en cours...", detail="Analyse requête par requête...")
-            resultats = req_pipeline.execute_dp(input.budget_total(), get_poids_req(), progress=p)
+            resultats = req_pipeline.execute_dp(input.budget_total(), get_poids_req(), show_progress=p)
 
         resultats_df.set(resultats)
         return afficher_resultats(resultats_df, requetes())
@@ -1063,7 +1082,7 @@ def server(input: Inputs, output: Outputs, session: Session):
     def meta_data() -> ui.Tag:
         """
         Affiche les métadonnées YAML sous forme préformatée,
-        ou un message si aucune métadonnée n’est disponible.
+        ou un message si aucune métadonnée n'est disponible.
         """
         metadata = yaml_metadata_str()
 
@@ -1074,7 +1093,3 @@ def server(input: Inputs, output: Outputs, session: Session):
             ui.tags.p("Métadonnées YAML :"),
             ui.tags.pre(metadata)
         )
-
-# ----------------------------------------------------------------------------------------------
-# ----------------------------------------------------------------------------------------------
-# ----------------------------------------------------------------------------------------------

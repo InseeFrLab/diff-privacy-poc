@@ -2,234 +2,291 @@ import polars as pl
 import opendp.prelude as dp
 import copy
 from src.stats_dp.process_tools import (
-    calculer_toutes_les_requetes, optimisation_et_assemblage_results,
-    df_comptage, df_total, df_moyenne, df_ratio, df_quantile
+    run_all_queries, finalize_and_optimize_results,
+    compute_count_diagnostics, compute_sum_diagnostics,
+    compute_mean_diagnostics, compute_ratio_diagnostics,
+    compute_quantile_diagnostics
 )
 from src.stats_dp.fonctions import (
-    optimisation_chaine,
-    create_context, intervalle_confiance_quantile
+    add_variance, add_confidence_interval, extract_columns_from_filter
 )
-from src.stats_dp.request_class import Count, Sum, Quantile, Query
-import numpy as np
+from src.stats_dp.request_class import Count, Sum, Quantile, Query, DatasetInfo
 import time
 dp.enable_features("contrib")
 
 
-class Pipeline():
+class QueryPipeline():
     def __init__(
         self,
-        dict_req: dict[str, Query],
-        lf: pl.LazyFrame,
-        contribution_individu_max: int = 1,
-        borne_max_taille_dataset: int = 1
+        queries: dict[str, Query],
+        dataset_info: DatasetInfo
     ):
-        self.dict_req = dict_req
-        self.lf = lf
-        self.contribution_individu_max = contribution_individu_max
-        self.borne_max_taille_dataset = borne_max_taille_dataset
+        self.queries = queries
+        self.dataset_info = dataset_info
+        self.lf = dataset_info.lf
+        self.max_individual_contribution = dataset_info.max_individual_contribution
+        self.max_dataset_size_bound = dataset_info.max_dataset_size_bound
 
-        variables = {val for request in self.dict_req.values() if request.by for val in request.by}
+        variables = {
+            var for query in self.queries.values() if query.group_by for var in query.group_by
+        }
         df = self.lf.select([pl.col(v).drop_nulls() for v in variables]).collect()
         self.key_values = {
             v: sorted(df[v].unique().to_list())
             for v in variables
         }
 
-        data_requetes = {k: copy.deepcopy(v) for k, v in self.dict_req.items()}
-        self.dict_query = {}
+        # Deep copy and build internal query dict
+        copied_queries = {k: copy.deepcopy(v) for k, v in self.queries.items()}
+        self.internal_queries = {}
         i = 1
-
-        for (key, request) in data_requetes.items():
-            if not isinstance(request, (Count, Quantile)):
-                tuple_request = request.transformation()
+        for query_id, query in copied_queries.items():
+            if not isinstance(query, (Count, Quantile)):
+                internal_queries = query.transformation()
             else:
-                tuple_request = (request,)
+                internal_queries = (query,)
 
-            for sous_req in tuple_request:
-                if sous_req not in self.dict_query.values():
-                    sous_req.id_req.append(key)
-                    cle = f"query_{i}"
-                    self.dict_query[cle] = sous_req
+            for internal_query in internal_queries:
+                if internal_query not in self.internal_queries.values():
+                    internal_query.query_ids.append(query_id)
+                    query_key = f"query_{i}"
+                    self.internal_queries[query_key] = internal_query
                     i += 1
-
                 else:
-                    # 🔎 Trouver la clé correspondant à la requête identique
-                    id_cle = next(k for k, v in self.dict_query.items() if v == sous_req)
-                    self.dict_query[id_cle].id_req.append(key)
+                    existing_key = next(
+                        k for k, v in self.internal_queries.items() if v == internal_query
+                    )
+                    self.internal_queries[existing_key].query_ids.append(query_id)
 
     def execute(
         self,
         use_bounds: bool = False
     ) -> dict[str, pl.DataFrame]:
-        print("==> Début execute")
-        start_global = time.time()
-        dict_resultat = {}
+        """
+        Execute all registered requests in the pipeline and return the results.
 
-        for key, request in self.dict_req.items():
+        Each request is executed on the current LazyFrame `self.lf`, optionally
+        using bounds if `use_bounds` is set to True.
 
-            resultat = request.execute(lf=self.lf, use_bounds=use_bounds)
-            dict_resultat[key] = resultat
+        Parameters
+        ----------
+        use_bounds : bool, optional
+            If True, bounds will be applied during request execution. Defaults to False.
 
-        total_duration = time.time() - start_global
-        print(f"<== Fin execute (temps total : {total_duration:.2f} secondes)")
-        return dict_resultat
+        Returns
+        -------
+        dict[str, pl.DataFrame]
+            A dictionary mapping each request key to its result as a Polars DataFrame.
+        """
+        print("==> Starting execute")
+        global_start = time.time()
+        result_dict = {}
+
+        for query_id, query in self.queries.items():
+            result_dict[query_id] = query.execute(lf=self.lf, use_bounds=use_bounds)
+
+        total_duration = time.time() - global_start
+        print(f"<== Finished execute (total time: {total_duration:.2f} seconds)")
+        return result_dict
 
     def execute_dp(
         self,
-        budget_global: float,
-        dict_poids: dict[str, float],
-        optim_MCG: bool = True,
-        progress: bool = False
+        rho_budget: float,
+        weights: dict[str, float],
+        use_gls: bool = True,
+        show_progress: bool = False
     ) -> dict[str, pl.DataFrame]:
-        print("==> Début execute_dp")
+        """
+        Run all differentially private queries using allocated weights and a rho budget.
+
+        This method:
+        - Filters only the necessary columns from the LazyFrame
+        - Creates privacy contexts for DP mechanisms (rho for count/sum, epsilon for quantile)
+        - Computes all queries and applies final formatting and optimization if needed
+
+        Parameters
+        ----------
+        rho_budget : float
+            Total privacy budget to be distributed across all queries.
+        weights : dict[str, float]
+            Dictionary assigning a weight to each query key.
+        use_gls : bool, optional
+        show_progress : bool, optional
+            Whether to display progress during execution (default: False).
+
+        Returns
+        -------
+        dict[str, pl.DataFrame]
+            A dictionary of Polars DataFrames with results for each type of query.
+        """
+        print("==> Starting run_dp_queries")
         start_global = time.time()
 
-        data_query = self._query_pondere(budget_global=budget_global, dict_poids=dict_poids)
-        data_lazy = self.lf
+        internal_queries = self._weighted_queries(rho_budget=rho_budget, weights=weights)
+        lazy_data = self.lf
 
-        # Extraire toutes les colonnes mentionnées dans les requêtes
-        vars_by = {val for request in data_query.values() if request.by for val in request.by}
-        vars_variable = {
-            v for v in (getattr(req, "variable", None) for req in data_query.values())
+        # Identify required columns from all query objects
+        by_vars = {
+            var for query in internal_queries.values() if query.group_by for var in query.group_by
+        }
+        main_vars = {
+            v for v in (getattr(query, "variable", None) for query in internal_queries.values())
             if v is not None
         }
-        vars_variable_num = {
-            v for v in (getattr(req, "variable_numerateur", None) for req in data_query.values())
+        numerator_vars = {
+            v for v in (getattr(query, "numerator_variable", None) for query in internal_queries.values())
             if v is not None
         }
-        vars_variable_denom = {
-            v for v in (getattr(req, "variable_denominateur", None) for req in data_query.values())
+        denominator_vars = {
+            v for v in (getattr(query, "denominator_variable", None) for query in internal_queries.values())
             if v is not None
         }
-        selected_columns = set(vars_by | vars_variable | vars_variable_num | vars_variable_denom)
+        filter_vars = {
+            col
+            for query in internal_queries.values()
+            if getattr(query, "filter_expr", None)
+            for col in extract_columns_from_filter(query.filter_expr)
+        }
 
-        # Sous-échantillon propre du LazyFrame
+        selected_columns = set(
+            by_vars | main_vars | numerator_vars | denominator_vars | filter_vars
+        )
+
+        # Minimal LazyFrame filtering
         if not selected_columns:
             filtered_lazy = (
-                data_lazy.with_columns(pl.lit(1).alias("__dummy"))
+                lazy_data.with_columns(pl.lit(1).alias("__dummy"))
                 .select("__dummy")
                 .collect()
                 .lazy()
             )
-
         else:
-            filtered_lazy = data_lazy.select(selected_columns).collect().lazy()
+            filtered_lazy = lazy_data.select(selected_columns).collect().lazy()
 
-        context_param = {
-            "data": filtered_lazy,
-            "privacy_unit": dp.unit_of(contributions=self.contribution_individu_max),
-            "margins": [dp.polars.Margin(max_partition_length=self.borne_max_taille_dataset)],
-        }
+        # Split weights for rho (count/sum) and epsilon (quantile)
+        quantile_queries_weights = [
+            query.weight for query in internal_queries.values() if isinstance(query, Quantile)
+        ]
+        other_queries_weights = [
+            query.weight for query in internal_queries.values() if not isinstance(query, Quantile)
+        ]
 
         start_context = time.time()
 
-        context_rho, context_eps = create_context(
-            context_param, budget_global, data_query
+        self.dataset_info.lf = filtered_lazy
+        self.dataset_info.create_rho_context(
+            rho_budget * sum(other_queries_weights),
+            other_queries_weights
         )
-        duration = time.time() - start_context
-        print(f"✅ Context terminée en {duration:.2f} secondes.")
-
-        resultats_df = calculer_toutes_les_requetes(
-            context_rho, context_eps, self.key_values, data_query, progress
+        self.dataset_info.create_epsilon_context(
+            rho_budget * sum(quantile_queries_weights),
+            quantile_queries_weights
         )
 
-        resultats_df = optimisation_et_assemblage_results(resultats_df, self.dict_req, data_query, self.key_values)
+        context_duration = time.time() - start_context
+        print(f"✅ Privacy context initialized in {context_duration:.2f} seconds.")
+
+        result_dfs = run_all_queries(
+            self.dataset_info, internal_queries, self.key_values, show_progress
+        )
+
+        result_dfs = finalize_and_optimize_results(
+            result_dfs, self.queries, internal_queries, self.key_values
+        )
+
         total_duration = time.time() - start_global
-        print(f"<== Fin execute_dp (temps total : {total_duration:.2f} secondes)")
-        return resultats_df
+        print(f"<== Finished run_dp_queries (total time: {total_duration:.2f} seconds)")
+        return result_dfs
 
     def precision_dp(
         self,
-        budget_global: float,
-        dict_poids: dict[str, float]
+        rho_budget: float,
+        weights: dict[str, float]
     ) -> dict[str, pl.DataFrame]:
-        print("==> Début precision_dp")
+        """
+        Compute differentially private statistics (count, sum, mean, ratio, quantile)
+        using allocated weights and a rho privacy budget.
+
+        This method:
+        - Applies weights to queries
+        - Adds variance estimates to Count and Sum queries
+        - Computes confidence intervals for Quantile queries using the analytical bound
+        with Gaussian noise
+
+        Parameters
+        ----------
+        rho_budget : float
+            Total privacy budget to be distributed across all queries.
+        weights : dict[str, float]
+            Dictionary assigning a weight to each query identifier.
+
+        Returns
+        -------
+        dict[str, pl.DataFrame]
+            Dictionary containing result DataFrames for each type of query:
+            "Count", "Total", "Mean", "Ratio", and "Quantile".
+        """
+        print("==> Starting compute_dp_precision")
         start_global = time.time()
 
-        data_query = self._query_pondere(budget_global=budget_global, dict_poids=dict_poids)
+        internal_queries = self._weighted_queries(rho_budget=rho_budget, weights=weights)
 
-        query_comptage = {k: v for k, v in data_query.items() if isinstance(v, Count)}
-        query_comptage = optimisation_chaine(query_comptage, self.key_values, budget_global)
+        # Count queries
+        internal_count_queries = {k: v for k, v in internal_queries.items() if isinstance(v, Count)}
+        internal_count_queries = add_variance(internal_count_queries, self.key_values, rho_budget)
 
-        query_total = {k: v for k, v in data_query.items() if isinstance(v, Sum)}
-        query_total = optimisation_chaine(query_total, self.key_values, budget_global)
+        # Sum queries
+        internal_sum_queries = {k: v for k, v in internal_queries.items() if isinstance(v, Sum)}
+        internal_sum_queries = add_variance(internal_sum_queries, self.key_values, rho_budget)
 
-        query_quantile = {k: v for k, v in data_query.items() if isinstance(v, Quantile)}
-        filtres_uniques = set(query.filtre for query in query_quantile.values())
-        variables_uniques = set(query.variable for query in query_quantile.values())
-
-        for filtre in filtres_uniques:
-            for variable in variables_uniques:
-                query_filtre_variable = {
-                    k: v for k, v in query_quantile.items()
-                    if v.variable == variable and v.filtre == filtre
-                }
-
-                for key_query, query in query_filtre_variable.items():
-
-                    epsilon = np.sqrt(8 * budget_global * query.poids)
-
-                    vrai_tableau = query.execute(self.lf, use_bounds=False)
-                    ic = intervalle_confiance_quantile(self.lf, query, epsilon, vrai_tableau)
-                    query_quantile[key_query].scale = ic
+        # Quantile queries
+        quantile_queries = {k: v for k, v in internal_queries.items() if isinstance(v, Quantile)}
+        quantile_queries = add_confidence_interval(self.lf, quantile_queries, rho_budget)
 
         results = {
-            "Comptage": df_comptage(self.dict_req, query_comptage),
-            "Total": df_total(self.lf, self.dict_req, query_comptage, query_total),
-            "Moyenne": df_moyenne(self.lf, self.dict_req, query_comptage, query_total),
-            "Ratio": df_ratio(self.lf, self.dict_req, query_comptage, query_total),
-            "Quantile": df_quantile(query_quantile),
+            "Count": compute_count_diagnostics(self.queries, internal_count_queries),
+            "Sum": compute_sum_diagnostics(self.lf, self.queries, internal_count_queries, internal_sum_queries),
+            "Mean": compute_mean_diagnostics(self.lf, self.queries, internal_count_queries, internal_sum_queries),
+            "Ratio": compute_ratio_diagnostics(self.lf, self.queries, internal_count_queries, internal_sum_queries),
+            "Quantile": compute_quantile_diagnostics(quantile_queries),
         }
+
         total_duration = time.time() - start_global
-        print(f"<== Fin precision_dp (temps total : {total_duration:.2f} secondes)")
+        print(f"<== Finished compute_dp_precision (total time: {total_duration:.2f} seconds)")
         return results
 
-    def precision_opendp(
+    def _weighted_queries(
         self,
-        budget_global: float,
-        dict_poids: dict[str, float],
-        alpha: float = 0.05
-    ) -> dict[str, pl.DataFrame]:
-        dict_resultat = {}
-
-        context_param = {
-            "data": self.lf,
-            "privacy_unit": dp.unit_of(contributions=self.contribution_individu_max),
-            "margins": [dp.polars.Margin(max_partition_length=self.borne_max_taille_dataset)],
-        }
-
-        data_requetes = {k: copy.deepcopy(v) for k, v in self.dict_req.items()}
-        poids_total = sum(poids for poids in dict_poids.values())
-
-        for key, request in data_requetes.items():
-            request.poids = dict_poids[key] / poids_total
-
-        context_rho, context_eps = create_context(
-            context_param, budget_global, data_requetes
-        )
-
-        for key, request in data_requetes.items():
-
-            if isinstance(request, Quantile):
-                context_use = context_eps
-            else:
-                context_use = context_rho
-
-            resultat = request.precision_opendp(
-                context=context_use, key_values=self.key_values, alpha=alpha
-            )
-            dict_resultat[key] = resultat
-
-        return dict_resultat
-
-    def _query_pondere(
-        self,
-        budget_global: float,
-        dict_poids: dict[str, float]
+        rho_budget: float,
+        weights: dict[str, float]
     ) -> dict[str, Query]:
-        for request in self.dict_query.values():
-            request.poids = sum(dict_poids.get(r, 0) for r in request.id_req)
+        """
+        Assign weights and apply differential privacy precision to each query.
 
-            if isinstance(request, (Count, Sum)):
-                request.precision_dp(budget_global)
-        return self.dict_query
+        For each query in the pipeline:
+        - The weight is computed as the sum of weights associated with its requested IDs.
+        - If the query is of type Count or Sum, the method applies differential privacy
+        using the rho budget.
+
+        Parameters
+        ----------
+        rho_budget : float
+            Total privacy budget to be distributed across queries.
+        weights_dict : dict[str, float]
+            Dictionary mapping query identifiers to their relative weights.
+
+        Returns
+        -------
+        dict[str, Query]
+            The updated dictionary of queries with assigned weights and applied precision
+            where appropriate.
+        """
+        for internal_query in self.internal_queries.values():
+            internal_query.weight = sum(
+                weights.get(query_id, 0) for query_id in internal_query.query_ids
+            )
+
+            if isinstance(internal_query, (Count, Sum)):
+                internal_query.precision_dp(rho_budget)
+
+        return self.internal_queries

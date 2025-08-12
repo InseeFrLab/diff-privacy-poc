@@ -4,26 +4,26 @@
   },
   "req_2": {
     "type": "Count",
-    "by": [
+    "group_by": [
       "AGE_CAT",
       "STATUT"
     ]
   },
   "req_3": {
     "type": "Count",
-    "by": [
+    "group_by": [
       "AGE_CAT"
     ]
   },
   "req_4": {
     "type": "Count",
-    "by": [
+    "group_by": [
       "STATUT"
     ]
   },
   "req_5": {
     "type": "Count",
-    "by": [
+    "group_by": [
       "AGE_CAT",
       "MONOPARENT",
       "STATUT"
@@ -52,7 +52,7 @@
       0.0,
       300000.0
     ],
-    "by": [
+    "group_by": [
       "AGE_CAT"
     ]
   },
@@ -71,7 +71,7 @@
       0.0,
       300000.0
     ],
-    "by": [
+    "group_by": [
       "AGE_CAT"
     ]
   }

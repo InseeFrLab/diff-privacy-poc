@@ -73,7 +73,12 @@ def make_radio_buttons(request, type_req: Query, dict_results):
                     overflow: visible !important;
                 }}
                 </style>
-                <div style='max-height: 250px; overflow-y: auto; max-width: 500px; margin-top: 10px;'>
+                <div style='
+                    max-height: 250px;
+                    overflow-y: auto;
+                    max-width: 500px;
+                    margin-top: 10px;
+                '>
                     {resultat.to_pandas().to_html(
                         classes="table table-striped table-hover table-sm text-center align-middle",
                         border=0,

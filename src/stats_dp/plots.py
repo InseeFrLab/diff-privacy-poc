@@ -8,7 +8,7 @@ sns.set_theme(style="whitegrid")
 
 
 def get_custom_color(val_color: Union[str, tuple]):
-    if val_color == "Aucun":
+    if val_color == "None":
         return "darkgreen"
     if isinstance(val_color, str):
         return "steelblue"
@@ -17,7 +17,13 @@ def get_custom_color(val_color: Union[str, tuple]):
     return "gray"
 
 
-def create_barplot(df: pd.DataFrame, x_col: str, y_col: str, text: str, color: str) -> go.Figure:
+def create_barplot(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    text: str,
+    color: str
+) -> go.Figure:
     """
     Affiche un diagramme en barre horizontale, accompagnée d'un code couleur et de texte sur
     les barres si la place le permet.
@@ -82,7 +88,10 @@ def create_barplot(df: pd.DataFrame, x_col: str, y_col: str, text: str, color: s
     return fig
 
 
-def create_histo_plot(df: pd.DataFrame, quantile_alpha: float) -> plt.Figure:
+def create_histo_plot(
+    df: pd.DataFrame,
+    quantile_alpha: float
+) -> plt.Figure:
     """
     Affiche un histogramme des valeurs de la variable 'body_mass_g', accompagné
     d'une ligne verticale représentant un quantile donné.
@@ -104,7 +113,10 @@ def create_histo_plot(df: pd.DataFrame, quantile_alpha: float) -> plt.Figure:
     return fig
 
 
-def create_fc_emp_plot(df: pd.DataFrame, quantile_alpha: float) -> plt.Figure:
+def create_fc_emp_plot(
+    df: pd.DataFrame,
+    quantile_alpha: float
+) -> plt.Figure:
     """
     Affiche la fonction de répartition empirique (CDF) de la variable 'body_mass_g',
     avec une annotation visuelle du quantile à un niveau donné.
