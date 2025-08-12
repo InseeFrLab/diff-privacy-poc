@@ -1,15 +1,11 @@
 import numpy as np
 import pandas as pd
-from src.stats_dp.constant import (
-    choix_quantile
-)
-from src.stats_dp.fonctions import (
-    calcul_MCG
-)
-from src.stats_dp.request_class import Count, Sum, Mean, Quantile, Ratio, Query, DatasetInfo
-from typing import Optional, Union
 import polars as pl
 from shiny import ui
+
+from stats_dp.constant import choix_quantile
+from stats_dp.fonctions import calcul_MCG
+from stats_dp.request_class import Count, DatasetInfo, Mean, Quantile, Query, Ratio, Sum
 
 
 def find_count_query(query_id: str, internal_queries: dict[str, Query]) -> Count | None:
@@ -51,7 +47,7 @@ def compute_count_diagnostics(
         - Noise std deviation
     """
 
-    count_queries = {
+    count_queries: dict[str, Query] = {
         query_id: query
         for query_id, query in queries.items()
         if isinstance(query, Count)
@@ -59,7 +55,7 @@ def compute_count_diagnostics(
 
     results = []
 
-    for query_id, query in count_queries.items():
+    for query_id in count_queries:
         internal_count_query = find_count_query(query_id, internal_count_queries)
         results.append({
             "requête": query_id,
@@ -71,7 +67,8 @@ def compute_count_diagnostics(
 
     results = pl.DataFrame(results)
     results = results.with_columns([
-        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes)
+        pl.col(col).round(1)
+        for col, dtype in zip(results.columns, results.dtypes, strict=True)
         if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
     ])
     return results
@@ -142,10 +139,7 @@ def compute_sum_diagnostics(
             sum_biased = row_biased["sum"]
             sum_unbiased = row_unbiased["sum"]
 
-            if sum_biased == 0:
-                cv = float("inf")
-            else:
-                cv = 100 * total_scale / sum_biased
+            cv = float("inf") if sum_biased == 0 else 100 * total_scale / sum_biased
 
             bias = sum_biased - sum_unbiased
             relative_bias = 100 * bias / sum_unbiased
@@ -173,7 +167,7 @@ def compute_sum_diagnostics(
 
     results = pl.DataFrame(results)
     results = results.with_columns([
-        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes)
+        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes, strict=True)
         if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
     ])
     return results
@@ -246,7 +240,7 @@ def compute_mean_diagnostics(
 
         for biased_row, unbiased_row in zip(
             biased_df.iter_rows(named=True),
-            unbiased_df.iter_rows(named=True)
+            unbiased_df.iter_rows(named=True), strict=True
         ):
             total_biased = biased_row.get("sum", 0)
             total_true = unbiased_row.get("sum", 0)
@@ -295,7 +289,7 @@ def compute_mean_diagnostics(
 
     results = pl.DataFrame(results)
     results = results.with_columns([
-        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes)
+        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes, strict=True)
         if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
     ])
     return results
@@ -345,7 +339,8 @@ def compute_ratio_diagnostics(
         list_biais_relatif = []
 
         for row_biaise, row_non_biaise in zip(
-            resultat.iter_rows(named=True), resultat_non_biaise.iter_rows(named=True)
+            resultat.iter_rows(named=True),
+            resultat_non_biaise.iter_rows(named=True), strict=True
         ):
             num_b = row_biaise.get("sum_numerator", 0)
             denom_b = row_biaise.get("sum_denominator", 1)
@@ -396,7 +391,8 @@ def compute_ratio_diagnostics(
 
     results = pl.DataFrame(results)
     results = results.with_columns([
-        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes)
+        pl.col(col).round(1)
+        for col, dtype in zip(results.columns, results.dtypes, strict=True)
         if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
     ])
     return results
@@ -421,7 +417,7 @@ def compute_quantile_diagnostics(quantile_queries: dict[str, Quantile]) -> pl.Da
 
     results = pl.DataFrame(results)
     results = results.with_columns([
-        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes)
+        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes, strict=True)
         if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
     ])
     return results
@@ -430,8 +426,8 @@ def compute_quantile_diagnostics(quantile_queries: dict[str, Quantile]) -> pl.Da
 def run_all_queries(
     dataset_info: DatasetInfo,
     internal_queries: dict[str, Query],
-    key_values: Optional[dict[str, list[str]]] = None,
-    show_progress: Optional[ui.Progress] = None
+    key_values: dict[str, list[str]] | None = None,
+    show_progress: ui.Progress | None = None
 ) -> dict[str, pd.DataFrame]:
 
     current_results = {}
@@ -466,7 +462,7 @@ def run_all_queries(
 def finalize_and_optimize_results(
     results_store: dict[str, pd.DataFrame],
     queries: dict[str, Query],
-    internal_queries: dict[str, Union[Count, Sum, Quantile]],
+    internal_queries: dict[str, Count | Sum | Quantile],
     key_values: dict[str, list[str]]
 ) -> dict[str, pl.DataFrame]:
 

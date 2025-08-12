@@ -1,13 +1,13 @@
-import polars as pl
-from itertools import product
-from abc import ABC, abstractmethod
-import numpy as np
-from typing import Optional, Any, Union
-import re
 import operator
-import opendp.prelude as dp
-from opendp.extras.polars import LazyFrameQuery
+import re
+from abc import ABC, abstractmethod
+from itertools import product
+from typing import Any
 
+import numpy as np
+import opendp.prelude as dp
+import polars as pl
+from opendp.extras.polars import LazyFrameQuery
 
 OPS = {
     "==": operator.eq,
@@ -74,7 +74,7 @@ def parse_single_condition(
 
 def parse_filter_expression(
     filter_string: str,
-    available_columns: Optional[list[str]] = None
+    available_columns: list[str] | None = None
 ) -> pl.Expr:
     """
     Parses a combined filter string into a single Polars expression.
@@ -116,7 +116,7 @@ def parse_filter_expression(
         raise ValueError("The filter is empty or malformed.")
 
     expr = expressions[0]
-    for op, next_expr in zip(operators, expressions[1:]):
+    for op, next_expr in zip(operators, expressions[1:], strict=True):
         if op == "&":
             expr = expr & next_expr
         elif op == "|":
@@ -143,11 +143,11 @@ def generate_public_keys(
     """
     selected_values = [value_options[col] for col in group_by_columns if col in value_options]
     combinations = list(product(*selected_values))  # Cartesian product of values
-    public_keys = pl.DataFrame([dict(zip(group_by_columns, comb)) for comb in combinations]).lazy()
+    public_keys = pl.DataFrame([dict(zip(group_by_columns, comb, strict=True)) for comb in combinations]).lazy()
     return public_keys
 
 
-class DatasetInfo():
+class DatasetInfo:
     """
     Encapsulates dataset metadata and provides methods to create differential privacy contexts
     using either (ε, 0)- or (p)-differential privacy settings.
@@ -156,8 +156,8 @@ class DatasetInfo():
     lf: pl.LazyFrame
     max_individual_contribution: int
     max_dataset_size_bound: int
-    rho_context: Optional[dp.Context]
-    epsilon_context: Optional[dp.Context]
+    rho_context: dp.Context | None
+    epsilon_context: dp.Context | None
 
     def __init__(
         self,
@@ -183,7 +183,7 @@ class DatasetInfo():
         self,
         rho_budget: float,
         weight_list: list[float]
-    ) -> Optional[dp.Context]:
+    ) -> dp.Context | None:
         """
         Create a (p)-differential privacy context using a given rho budget and weights.
 
@@ -208,7 +208,7 @@ class DatasetInfo():
         self,
         rho_budget: float,
         weight_list: list[float]
-    ) -> Optional[dp.Context]:
+    ) -> dp.Context | None:
         """
         Create a (ε, 0)-differential privacy context from a given p budget
         using the conversion ε = √(8p).
@@ -241,8 +241,8 @@ class Query(ABC):
 
     def __init__(
         self,
-        group_by: Optional[list[str]] = None,
-        filter_expr: Optional[str] = None
+        group_by: list[str] | None = None,
+        filter_expr: str | None = None
     ):
         """
         Initialize a query with optional grouping and filtering.
@@ -290,7 +290,7 @@ class Query(ABC):
     def plan_dp(
         self,
         dataset_info: DatasetInfo,
-        key_values: Optional[dict[str, list[str]]] = None
+        key_values: dict[str, list[str]] | None = None
     ) -> LazyFrameQuery:
         """
         Build the differentially private query plan.
@@ -307,7 +307,7 @@ class Query(ABC):
     def precision_opendp(
         self,
         dataset_info: DatasetInfo,
-        key_values: Optional[dict[str, list[str]]] = None,
+        key_values: dict[str, list[str]] | None = None,
         alpha: float = 0.05
     ) -> pl.DataFrame:
         """
@@ -326,7 +326,7 @@ class Query(ABC):
     def execute_dp(
         self,
         dataset_info: DatasetInfo,
-        key_values: Optional[dict[str, list[str]]] = None
+        key_values: dict[str, list[str]] | None = None
     ) -> pl.DataFrame:
         """
         Execute the DP query and return the released results.
@@ -398,11 +398,11 @@ class Query(ABC):
 
     def filter_and_group_with_bounds(
         self,
-        lf: Union[pl.LazyFrame, LazyFrameQuery],
+        lf: pl.LazyFrame | LazyFrameQuery,
         *expressions: pl.Expr,
         use_bounds: bool,
-        key_values: Optional[dict[str, list[str]]] = None
-    ) -> Union[pl.LazyFrame, LazyFrameQuery]:
+        key_values: dict[str, list[str]] | None = None
+    ) -> pl.LazyFrame | LazyFrameQuery:
         """
         Apply filter, bounds clipping, grouping, and optional key join to a LazyFrame.
 
@@ -449,7 +449,7 @@ class Count(Query):
     def plan_dp(
         self,
         dataset_info: DatasetInfo,
-        key_values: Optional[dict[str, list[str]]] = None
+        key_values: dict[str, list[str]] | None = None
     ) -> LazyFrameQuery:
         """
         Create the DP query plan for count query.
@@ -504,8 +504,8 @@ class Sum(Query):
         self,
         variable: str,
         bounds: tuple[float, float],
-        group_by: Optional[list[str]] = None,
-        filter_expr: Optional[str] = None
+        group_by: list[str] | None = None,
+        filter_expr: str | None = None
     ):
         """
         Initialize a sum query with optional grouping and filtering.
@@ -523,7 +523,7 @@ class Sum(Query):
     def plan_dp(
         self,
         dataset_info: DatasetInfo,
-        key_values: Optional[dict[str, list[str]]] = None,
+        key_values: dict[str, list[str]] | None = None,
         center: bool = False
     ) -> LazyFrameQuery:
         """
@@ -568,7 +568,7 @@ class Sum(Query):
     def execute_dp(
         self,
         dataset_info: DatasetInfo,
-        key_values: Optional[dict[str, list[str]]] = None,
+        key_values: dict[str, list[str]] | None = None,
         center: bool = False
     ) -> pl.DataFrame:
         """
@@ -615,8 +615,8 @@ class Mean(Query):
         self,
         variable: str,
         bounds: tuple[float, float],
-        group_by: Optional[list[str]] = None,
-        filter_expr: Optional[str] = None
+        group_by: list[str] | None = None,
+        filter_expr: str | None = None
     ):
         """
         Initialize a mean query with optional grouping and filtering.
@@ -634,7 +634,7 @@ class Mean(Query):
     def plan_dp(
         self,
         dataset_info: DatasetInfo,
-        key_values: Optional[dict[str, list[str]]] = None
+        key_values: dict[str, list[str]] | None = None
     ) -> LazyFrameQuery:
         """
         Plan the differentially private mean query using a centered sum and count.
@@ -692,7 +692,7 @@ class Mean(Query):
     def execute_dp(
         self,
         dataset_info: DatasetInfo,
-        key_values: Optional[dict[str, list[str]]] = None
+        key_values: dict[str, list[str]] | None = None
     ) -> pl.DataFrame:
         """
         Execute the differentially private mean query by combining centered sum and count.
@@ -729,8 +729,8 @@ class Ratio(Query):
         denominator_variable: str,
         numerator_bounds: tuple[float, float],
         denominator_bounds: tuple[float, float],
-        group_by: Optional[list[str]] = None,
-        filter_expr: Optional[str] = None
+        group_by: list[str] | None = None,
+        filter_expr: str | None = None
     ):
         super().__init__(group_by=group_by, filter_expr=filter_expr)
         self.numerator_variable = numerator_variable
@@ -741,7 +741,7 @@ class Ratio(Query):
     def plan_dp(
         self,
         dataset_info: DatasetInfo,
-        key_values: Optional[dict[str, list[str]]] = None
+        key_values: dict[str, list[str]] | None = None
     ) -> LazyFrameQuery:
         """
         Plans the differentially private query for the ratio of sums.
@@ -800,7 +800,7 @@ class Ratio(Query):
     def execute_dp(
         self,
         dataset_info: DatasetInfo,
-        key_values: Optional[dict[str, list[str]]] = None
+        key_values: dict[str, list[str]] | None = None
     ) -> pl.DataFrame:
         """
         Executes the differentially private ratio query by dividing noisy sums.
@@ -842,8 +842,8 @@ class Quantile(Query):
         bounds: tuple[float, float],
         alphas: list[float],
         num_candidates: int,
-        group_by: Optional[list[str]] = None,
-        filter_expr: Optional[str] = None
+        group_by: list[str] | None = None,
+        filter_expr: str | None = None
     ):
         """
         Initialize Quantile query.
@@ -865,7 +865,7 @@ class Quantile(Query):
     def plan_dp(
         self,
         dataset_info: DatasetInfo,
-        key_values: Optional[dict[str, list[str]]] = None
+        key_values: dict[str, list[str]] | None = None
     ) -> LazyFrameQuery:
         """
         Plans the differentially private quantile queries.

@@ -1,21 +1,25 @@
-import polars as pl
-import opendp.prelude as dp
 import copy
-from src.stats_dp.process_tools import (
-    run_all_queries, finalize_and_optimize_results,
-    compute_count_diagnostics, compute_sum_diagnostics,
-    compute_mean_diagnostics, compute_ratio_diagnostics,
-    compute_quantile_diagnostics
-)
-from src.stats_dp.fonctions import (
-    add_variance, add_confidence_interval, extract_columns_from_filter
-)
-from src.stats_dp.request_class import Count, Sum, Quantile, Query, DatasetInfo
 import time
+
+import opendp.prelude as dp
+import polars as pl
+
+from stats_dp.fonctions import add_confidence_interval, add_variance, extract_columns_from_filter
+from stats_dp.process_tools import (
+    compute_count_diagnostics,
+    compute_mean_diagnostics,
+    compute_quantile_diagnostics,
+    compute_ratio_diagnostics,
+    compute_sum_diagnostics,
+    finalize_and_optimize_results,
+    run_all_queries,
+)
+from stats_dp.request_class import Count, DatasetInfo, Quantile, Query, Sum
+
 dp.enable_features("contrib")
 
 
-class QueryPipeline():
+class QueryPipeline:
     def __init__(
         self,
         queries: dict[str, Query],
@@ -41,10 +45,7 @@ class QueryPipeline():
         self.internal_queries = {}
         i = 1
         for query_id, query in copied_queries.items():
-            if not isinstance(query, (Count, Quantile)):
-                internal_queries = query.transformation()
-            else:
-                internal_queries = (query,)
+            internal_queries = (query,) if isinstance(query, Count | Quantile) else query.transformation()
 
             for internal_query in internal_queries:
                 if internal_query not in self.internal_queries.values():
@@ -286,7 +287,7 @@ class QueryPipeline():
                 weights.get(query_id, 0) for query_id in internal_query.query_ids
             )
 
-            if isinstance(internal_query, (Count, Sum)):
+            if isinstance(internal_query, Count | Sum):
                 internal_query.precision_dp(rho_budget)
 
         return self.internal_queries
