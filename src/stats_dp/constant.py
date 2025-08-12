@@ -1,4 +1,4 @@
-from src.stats_dp.request_class import Query, Count, Sum, Mean, Ratio, Quantile
+from stats_dp.request_class import Query, Count, Sum, Mean, Ratio, Quantile
 import os
 
 # Stockage des options S3 (MinIO)

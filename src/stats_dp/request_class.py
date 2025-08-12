@@ -152,6 +152,13 @@ class DatasetInfo():
     Encapsulates dataset metadata and provides methods to create differential privacy contexts
     using either (ε, 0)- or (p)-differential privacy settings.
     """
+
+    lf: pl.LazyFrame
+    max_individual_contribution: int
+    max_dataset_size_bound: int
+    rho_context: Optional[dp.Context]
+    epsilon_context: Optional[dp.Context]
+
     def __init__(
         self,
         lf: pl.LazyFrame,
@@ -169,8 +176,8 @@ class DatasetInfo():
         self.lf = lf
         self.max_individual_contribution = max_individual_contribution
         self.max_dataset_size_bound = max_dataset_size_bound
-        self.rho_context: Optional[dp.Context] = None
-        self.epsilon_context: Optional[dp.Context] = None
+        self.rho_context = None
+        self.epsilon_context = None
 
     def create_rho_context(
         self,
@@ -229,6 +236,8 @@ class Query(ABC):
     """
     Abstract base class for a statistical or differentially private query on a dataset.
     """
+
+    query_ids: list[str]
 
     def __init__(
         self,
