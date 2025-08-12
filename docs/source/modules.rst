@@ -1,5 +1,5 @@
-src
-===
+stats_dp
+========
 
 .. toctree::
    :maxdepth: 4

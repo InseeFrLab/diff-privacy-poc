@@ -1,12 +1,8 @@
 import numpy as np
 import pandas as pd
-from src.stats_dp.constant import (
-    choix_quantile
-)
-from src.stats_dp.fonctions import (
-    calcul_MCG
-)
-from src.stats_dp.request_class import Count, Sum, Mean, Quantile, Ratio, Query, DatasetInfo
+from .constant import choix_quantile
+from .fonctions import calcul_MCG
+from .request_class import Count, Sum, Mean, Quantile, Ratio, Query, DatasetInfo
 from typing import Optional, Union
 import polars as pl
 from shiny import ui

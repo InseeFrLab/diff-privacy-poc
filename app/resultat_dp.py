@@ -1,5 +1,5 @@
 from shiny import ui
-from app.preparer_requetes import make_card_body
+from .preparer_requetes import make_card_body
 
 
 def page_resultat_dp():

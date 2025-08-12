@@ -33,4 +33,4 @@ html_theme_options = {
   "github_url": "https://github.com/InseeFrLab/diff-privacy-poc",
   "use_edit_page_button": False,
 }
-html_static_path = ['_static']
+html_static_path = []

@@ -51,10 +51,18 @@ First install requirements
 uv pip install -r requirements-docs.txt
 ```
 
-To (re)generate documentation, run `make html` from the `/docs` folder
+To (re)generate Sphinx configuration
+```bash
+sphinx-apidoc  -o docs/source/ src/stats_dp/ --separate
+```
+
+To (re)generate documentation
+```bash
+make -C docs clean html
+```
 
 To browse generated documentation:
 ```bash
-uv python -m http.server -d docs/_build/html
+python -m http.server -d docs/_build/html
 ```
 then access (http://localhost:8000)[http://localhost:8000] from a web browser.

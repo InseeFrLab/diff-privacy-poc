@@ -1,16 +1,16 @@
 import polars as pl
 import opendp.prelude as dp
 import copy
-from src.stats_dp.process_tools import (
+from .process_tools import (
     run_all_queries, finalize_and_optimize_results,
     compute_count_diagnostics, compute_sum_diagnostics,
     compute_mean_diagnostics, compute_ratio_diagnostics,
     compute_quantile_diagnostics
 )
-from src.stats_dp.fonctions import (
+from .fonctions import (
     add_variance, add_confidence_interval, extract_columns_from_filter
 )
-from src.stats_dp.request_class import Count, Sum, Quantile, Query, DatasetInfo
+from .request_class import Count, Sum, Quantile, Query, DatasetInfo
 import time
 dp.enable_features("contrib")
 

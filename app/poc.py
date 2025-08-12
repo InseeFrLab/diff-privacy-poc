@@ -29,29 +29,29 @@ from app.conception_budget import page_conception_budget, make_radio_buttons
 from app.resultat_dp import page_resultat_dp, afficher_resultats
 from app.etat_budget_dataset import page_etat_budget_dataset
 
-from src.stats_dp.plots import (
+from stats_dp.plots import (
     create_histo_plot, create_fc_emp_plot,
     create_score_plot, create_proba_plot,
     create_barplot
 )
-from src.stats_dp.fonctions import (
+from stats_dp.fonctions import (
     eps_from_rho_delta,
     get_weights, load_data, manual_quantile_score,
     extract_column_names_from_choices,
     extract_bounds,
     load_yaml_metadata, assert_or_notify
 )
-from src.stats_dp.constant import (
+from stats_dp.constant import (
     storage_options,
     contrib_individu,
     chemin_dataset,
     choix_quantile,
     borne_max_taille_dataset
 )
-from src.stats_dp.request_class import (
+from stats_dp.request_class import (
     DatasetInfo, Count, Sum, Mean, Ratio, Quantile, parse_filter_expression
 )
-from src.stats_dp.pipeline_class import QueryPipeline
+from stats_dp.pipeline_class import QueryPipeline
 
 dp.enable_features("contrib")
 

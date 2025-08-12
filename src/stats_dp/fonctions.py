@@ -3,8 +3,8 @@ import polars as pl
 import pandas as pd
 from scipy.optimize import fsolve
 
-from src.stats_dp.constant import radio_to_weight
-from src.stats_dp.request_class import Sum, Mean, Ratio, Quantile, Query
+from .constant import radio_to_weight
+from .request_class import Sum, Mean, Ratio, Quantile, Query
 import yaml
 import operator
 import os
