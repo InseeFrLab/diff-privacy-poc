@@ -3,9 +3,9 @@ import pandas as pd
 import polars as pl
 from shiny import ui
 
-from stats_dp.constant import choix_quantile
-from stats_dp.fonctions import calcul_MCG
-from stats_dp.request_class import Count, DatasetInfo, Mean, Quantile, Query, Ratio, Sum
+from .constant import choix_quantile
+from .fonctions import calcul_MCG
+from .request_class import Count, DatasetInfo, Mean, Quantile, Query, Ratio, Sum
 
 
 def find_count_query(query_id: str, internal_queries: dict[str, Query]) -> Count | None:

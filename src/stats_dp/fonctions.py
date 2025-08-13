@@ -16,8 +16,8 @@ import yaml
 from scipy.optimize import fsolve
 from shiny import ui
 
-from stats_dp.constant import radio_to_weight
-from stats_dp.request_class import Mean, Quantile, Query, Ratio, Sum
+from .constant import radio_to_weight
+from .request_class import Mean, Quantile, Query, Ratio, Sum
 
 OPS = ["==", "!=", ">=", "<=", ">", "<"]
 

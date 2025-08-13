@@ -4,8 +4,8 @@ import time
 import opendp.prelude as dp
 import polars as pl
 
-from stats_dp.fonctions import add_confidence_interval, add_variance, extract_columns_from_filter
-from stats_dp.process_tools import (
+from .fonctions import add_confidence_interval, add_variance, extract_columns_from_filter
+from .process_tools import (
     compute_count_diagnostics,
     compute_mean_diagnostics,
     compute_quantile_diagnostics,
@@ -14,7 +14,7 @@ from stats_dp.process_tools import (
     finalize_and_optimize_results,
     run_all_queries,
 )
-from stats_dp.request_class import Count, DatasetInfo, Quantile, Query, Sum
+from .request_class import Count, DatasetInfo, Quantile, Query, Sum
 
 dp.enable_features("contrib")
 

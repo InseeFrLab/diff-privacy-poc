@@ -1,6 +1,6 @@
 import os  # noqa: F401
 
-from stats_dp.request_class import Count, Mean, Quantile, Query, Ratio, Sum
+from .request_class import Count, Mean, Quantile, Query, Ratio, Sum
 
 # Stockage des options S3 (MinIO)
 storage_options: dict[str, str] = {
