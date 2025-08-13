@@ -399,28 +399,25 @@ def compute_ratio_diagnostics(
 
 
 def compute_quantile_diagnostics(quantile_queries: dict[str, Quantile]) -> pl.DataFrame:
-
-    results = []
-    for query in quantile_queries.values():
-
-        for quantile_key, taille_ic in query.scale.items():
-            alpha = float(quantile_key.removeprefix("quantile_"))
-
-            results.append({
+    results = pl.DataFrame(
+        [
+            {
                 "requête": query.query_ids[0],
                 "variable": query.variable,
-                "quantile": choix_quantile[alpha],
+                "quantile": choix_quantile[ float(quantile_key.removeprefix("quantile_")) ],
                 "groupement": str(query.grouping_label),
                 "filtre": query.filter_expr,
                 "taille moyenne IC 95%": taille_ic,
-            })
-
-    results = pl.DataFrame(results)
-    results = results.with_columns([
-        pl.col(col).round(1) for col, dtype in zip(results.columns, results.dtypes, strict=True)
-        if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
-    ])
-    return results
+            }
+            for query in quantile_queries.values()
+            for quantile_key, taille_ic in query.scale.items()
+        ])
+    return results.with_columns(
+        [
+            pl.col(col).round(1)
+            for col, dtype in zip(results.columns, results.dtypes, strict=True)
+            if dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64)
+        ])
 
 
 def run_all_queries(

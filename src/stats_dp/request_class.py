@@ -246,6 +246,8 @@ class Query(ABC):
     query_ids: list[str]
     grouping_set: frozenset[str]
     grouping_label: str | list[str] | tuple[str]
+    filter_expr: str
+    variable: str | None
 
     def __init__(
         self,
@@ -844,11 +846,15 @@ class Ratio(Query):
 
 
 class Quantile(Query):
+    alphas : list[float]
+    num_candidates: int
+    bounds: tuple[float, float]
+
     def __init__(
         self,
         variable: str,
         bounds: tuple[float, float],
-        alphas: list[float],
+        alphas: list[float] | float,
         num_candidates: int,
         group_by: list[str] | None = None,
         filter_expr: str | None = None

@@ -83,6 +83,18 @@ def add_confidence_interval(
     rho_budget: float
 ) -> dict[str, Query]:
 
+    # @Stuart, did you mean to use memoization to avoid recomputing ?
+    #memo: dict[tuple[str, str|None], dict[str, float]] = {}
+    #for query in quantile_queries.values():
+    #    key = (query.filter_expr, query.variable)
+    #    if key not in memo:
+    #        memo[key] = compute_quantile_confidence_interval(
+    #                lf, query,
+    #                np.sqrt(8 * rho_budget * query.weight),
+    #                query.execute(lf, use_bounds=False)
+    #            )
+    #    query.scale = memo[key]
+
     unique_filters = set(query.filter_expr for query in quantile_queries.values())
     unique_variables = set(query.variable for query in quantile_queries.values())
 
