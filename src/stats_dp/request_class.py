@@ -42,10 +42,9 @@ def clip_variable_within_bounds(
         )
     return lf
 
+single_condition_pattern = re.compile(r'^(.*?)\s*(<=|>=|==|!=|<|>)\s*(.*?)$')
 
-def parse_single_condition(
-    condition: str
-) -> pl.Expr:
+def parse_single_condition(condition: str) -> pl.Expr:
     """
     Parses a string condition such as 'age > 18' into a Polars expression.
 
@@ -58,18 +57,25 @@ def parse_single_condition(
     Raises:
         ValueError: If the condition string is not valid or cannot be parsed.
     """
-    for op_str, op_func in OPS.items():
-        if op_str in condition:
-            left, right = condition.split(op_str, 1)
-            left = left.strip()
-            right = right.strip()
-            # Handle quoted strings
-            if re.match(r"^['\"].*['\"]$", right):
-                right = right[1:-1]
-            elif re.match(r"^\d+(\.\d+)?$", right):  # numeric value
-                right = float(right) if '.' in right else int(right)
-            return op_func(pl.col(left), right)
-    raise ValueError(f"Invalid condition: {condition}")
+    match = single_condition_pattern.match(condition)
+
+    if not match:
+        raise ValueError(f"Invalid condition: `{condition}`")
+    left, operator, right = match.groups()
+
+    if operator not in OPS:
+        raise ValueError(f"Invalid operator `{operator}` in condition `{condition}`")
+    op_func = OPS[operator]
+
+    # Handle quoted strings
+    if re.match(r"^['\"].*['\"]$", right):
+        return op_func(pl.col(left), right[1:-1])
+    elif re.match(r"^\d+$", right):  # numeric value
+        return op_func(pl.col(left), int(right))
+    elif re.match(r"^\d+(\.\d+)?$", right):  # numeric value
+        return op_func(pl.col(left), float(right))
+    else:
+        raise ValueError(f"Invalid right-hand side `{right}` in condition `{condition}`")
 
 
 def parse_filter_expression(
@@ -238,6 +244,8 @@ class Query(ABC):
     """
 
     query_ids: list[str]
+    grouping_set: frozenset[str]
+    grouping_label: str | list[str] | tuple[str]
 
     def __init__(
         self,
@@ -369,7 +377,8 @@ class Query(ABC):
         ]
         return f"{cls_name}({', '.join(args)})"
 
-    def __eq__(self, other: "Query") -> bool:
+    def __eq__(self, other: object) -> bool:
+        
         """
         Check for equality between two queries, ignoring internal fields.
 
@@ -379,20 +388,19 @@ class Query(ABC):
         Returns:
             bool: True if equivalent, False otherwise.
         """
-        exclude = {"grouping_set", "grouping_label", "query_ids", "weight", "sigma2", "scale"}
         if not isinstance(other, self.__class__):
-            return False
+            return NotImplemented
+        excluded_keys = set(("grouping_set", "grouping_label", "query_ids", "weight", "sigma2", "scale"))
 
         def normalize(obj):
             if isinstance(obj, list):
                 return sorted(obj)
             return obj
 
-        for key in set(self.__dict__) | set(other.__dict__):
+        for key in (set(self.__dict__) | set(other.__dict__)) - excluded_keys:
             val_self = normalize(self.__dict__.get(key))
             val_other = normalize(other.__dict__.get(key))
-
-            if key not in exclude and val_self != val_other:
+            if val_self != val_other:
                 return False
         return True
 
