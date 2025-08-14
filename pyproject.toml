@@ -29,8 +29,44 @@ dependencies = [
     "matplotlib==3.10.3"
 ]
 
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+
+[tool.mypy]
+python_version = "3.13"
+files = ["src"]
+namespace_packages = false
+install_types = true
+
+
+[tool.ruff]
+line-length = 120
+indent-width = 4
+extend-include = ["*.ipynb"]
+extend-exclude = ["notebooks/*"]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    # pycodestyle
+    "E",
+    # Pyflakes
+    "F",
+    # pyupgrade
+    "UP",
+    # flake8-bugbear
+    "B",
+    # flake8-simplify
+    "SIM",
+    # isort
+    "I",
+]
+#ignore  = ["B024"]
+
+[tool.ruff.format]
+indent-style = "space"

@@ -1,57 +1,50 @@
-from shiny import ui, render, reactive, module, Inputs, Outputs, Session
-from shinywidgets import render_plotly
-from pathlib import Path
-from datetime import datetime
-from scipy.stats import norm
-
-import seaborn as sns
-import opendp.prelude as dp
-import numpy as np
-import pandas as pd
-import polars as pl
+import ast
 import io
 import json
-import yaml
-from typing import Any
-from shinywidgets import output_widget
-from typing import Optional, Union
-import matplotlib.pyplot as plt
-import plotly.graph_objects as go
 import textwrap
-import ast
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional, Union
 
-from app.introduction_dp import page_introduction_dp
-from app.donnees import page_donnees
-from app.preparer_requetes import (
-    page_preparer_requetes, affichage_requete, affichage_bouton
-)
-from app.conception_budget import page_conception_budget, make_radio_buttons
-from app.resultat_dp import page_resultat_dp, afficher_resultats
-from app.etat_budget_dataset import page_etat_budget_dataset
+import matplotlib.pyplot as plt
+import numpy as np
+import opendp.prelude as dp
+import pandas as pd
+import plotly.graph_objects as go
+import polars as pl
+import seaborn as sns
+import yaml
+from scipy.stats import norm
+from shiny import Inputs, Outputs, Session, module, reactive, render, ui
+from shinywidgets import output_widget, render_plotly
 
-from src.stats_dp.plots import (
-    create_histo_plot, create_fc_emp_plot,
-    create_score_plot, create_proba_plot,
-    create_barplot
-)
-from src.stats_dp.fonctions import (
-    eps_from_rho_delta,
-    get_weights, load_data, manual_quantile_score,
-    extract_column_names_from_choices,
-    extract_bounds,
-    load_yaml_metadata, assert_or_notify
-)
-from src.stats_dp.constant import (
-    storage_options,
-    contrib_individu,
+from stats_dp.constant import (
+    borne_max_taille_dataset,
     chemin_dataset,
     choix_quantile,
-    borne_max_taille_dataset
+    contrib_individu,
+    storage_options,
 )
-from src.stats_dp.request_class import (
-    DatasetInfo, Count, Sum, Mean, Ratio, Quantile, parse_filter_expression
+from stats_dp.fonctions import (
+    assert_or_notify,
+    eps_from_rho_delta,
+    extract_bounds,
+    extract_column_names_from_choices,
+    get_weights,
+    load_data,
+    load_yaml_metadata,
+    manual_quantile_score,
 )
-from src.stats_dp.pipeline_class import QueryPipeline
+from stats_dp.pipeline_class import QueryPipeline
+from stats_dp.plots import create_barplot, create_fc_emp_plot, create_histo_plot, create_proba_plot, create_score_plot
+from stats_dp.request_class import Count, DatasetInfo, Mean, Quantile, Ratio, Sum, parse_filter_expression
+
+from .conception_budget import make_radio_buttons, page_conception_budget
+from .donnees import page_donnees
+from .etat_budget_dataset import page_etat_budget_dataset
+from .introduction_dp import page_introduction_dp
+from .preparer_requetes import affichage_bouton, affichage_requete, page_preparer_requetes
+from .resultat_dp import afficher_resultats, page_resultat_dp
 
 dp.enable_features("contrib")
 
@@ -60,7 +53,7 @@ www_dir = Path(__file__).parent / "www"
 
 data_example = sns.load_dataset("penguins").dropna()
 
-type_map = {
+type_map: dict[str, type] = {
     "Comptage": Count,
     "Total": Sum,
     "Moyenne": Mean,
@@ -68,7 +61,7 @@ type_map = {
     "Quantile": Quantile
 }
 
-mapping = {
+mapping: dict[str, type] = {
     "Count": Count,
     "Sum": Sum,
     "Mean": Mean,
@@ -105,7 +98,9 @@ app_ui = ui.page_navbar(
 
 @module.server
 def radio_buttons_server(
-    input: Inputs, output: Outputs, session: Session,
+    input: Inputs,
+    output: Outputs,
+    session: Session,
     requetes: reactive.Value[dict[str, dict[str, Any]]],
     requetes_pipeline_execute: reactive.calc
 ):
@@ -123,7 +118,7 @@ def radio_buttons_server(
         req_type = {k: v for k, v in data_requetes.items() if isinstance(v, type_map[type_req])}
         if not req_type:
             return {}
-        return {key: input[key]() for key in req_type.keys()}
+        return {key: input[key]() for key in req_type}
 
     return selected_values
 
@@ -881,7 +876,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
     # Page Préparer ses requêtes
     @render.ui
-    def ligne_conditionnelle() -> Optional[ui.TagList]:
+    def ligne_conditionnelle() -> ui.TagList | None:
         type_req = input.type_req()
         variables = variable_choices().copy()
 

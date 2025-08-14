@@ -1,13 +1,13 @@
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
 import plotly.graph_objects as go
-from typing import Union
+import seaborn as sns
+
 sns.set_theme(style="whitegrid")
 
 
-def get_custom_color(val_color: Union[str, tuple]):
+def get_custom_color(val_color: str|tuple):
     if val_color == "None":
         return "darkgreen"
     if isinstance(val_color, str):
@@ -47,7 +47,7 @@ def create_barplot(
     for _, row in df.iterrows():
         # Texte affiché sur la barre : court
         val = row[y_col]
-        val_text = f"{val:.1f}" if isinstance(val, (int, float)) else str(val)
+        val_text = f"{val:.1f}" if isinstance(val, int | float) else str(val)
         text_displayed = f"{row[text]}<br>{y_col}: {val_text}"
         displayed_texts.append(f"{text_displayed}")
 

@@ -1,5 +1,6 @@
-from src.stats_dp.request_class import Query, Count, Sum, Mean, Ratio, Quantile
-import os
+import os  # noqa: F401
+
+from .request_class import Count, Mean, Quantile, Query, Ratio, Sum
 
 # Stockage des options S3 (MinIO)
 storage_options: dict[str, str] = {
@@ -76,11 +77,11 @@ radio_to_weight: dict[int, float] = {
 }
 
 priorite: dict[Query, float] = {
-    Count: "2",
-    Sum: "2",
-    Mean: "1",
-    Ratio: "1",
-    Quantile: "3"
+    Count: 2,
+    Sum: 2,
+    Mean: 1,
+    Ratio: 1,
+    Quantile: 3,
 }
 
 # Contribution d’un individu dans une agrégation

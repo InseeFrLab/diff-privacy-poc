@@ -1,21 +1,23 @@
-import numpy as np
-import polars as pl
-import pandas as pd
-from scipy.optimize import fsolve
-
-from src.stats_dp.constant import radio_to_weight
-from src.stats_dp.request_class import Sum, Mean, Ratio, Quantile, Query
-import yaml
+import itertools
 import operator
 import os
-from itertools import combinations, product
-import itertools
-from functools import reduce
-import cvxpy as cp
-from shiny import ui
-from typing import Optional, Sequence, Union, FrozenSet
-import time
 import re
+import time
+from collections.abc import Sequence
+from functools import reduce
+from itertools import combinations, product
+from typing import Union
+
+import cvxpy as cp
+import numpy as np
+import pandas as pd
+import polars as pl
+import yaml
+from scipy.optimize import fsolve
+from shiny import ui
+
+from .constant import radio_to_weight
+from .request_class import Mean, Quantile, Query, Ratio, Sum
 
 OPS = ["==", "!=", ">=", "<=", ">", "<"]
 
@@ -81,6 +83,18 @@ def add_confidence_interval(
     rho_budget: float
 ) -> dict[str, Query]:
 
+    # @Stuart, did you mean to use memoization to avoid recomputing ?
+    #memo: dict[tuple[str, str|None], dict[str, float]] = {}
+    #for query in quantile_queries.values():
+    #    key = (query.filter_expr, query.variable)
+    #    if key not in memo:
+    #        memo[key] = compute_quantile_confidence_interval(
+    #                lf, query,
+    #                np.sqrt(8 * rho_budget * query.weight),
+    #                query.execute(lf, use_bounds=False)
+    #            )
+    #    query.scale = memo[key]
+
     unique_filters = set(query.filter_expr for query in quantile_queries.values())
     unique_variables = set(query.variable for query in quantile_queries.values())
 
@@ -115,7 +129,12 @@ def calcul_variance(
     nb_modalite = {k: len(v) for k, v in key_values.items()}
     X, R, X_df_infos = MCG(liste_requests, key_values)
 
-    dict_request = {key: {"nb_cellule": produit_modalites(query.grouping_set, nb_modalite), "sigma2": query.precision_dp(budget_total)} for key, query in dict_query.items()}
+    dict_request = {
+        key: {
+            "nb_cellule": produit_modalites(query.grouping_set, nb_modalite),
+            "sigma2": query.precision_dp(budget_total)
+        } for key, query in dict_query.items()
+    }
 
     # Matrice de variance Omega (hétéroscédastique)
     sigma2 = np.array(list(itertools.chain.from_iterable(
@@ -181,7 +200,7 @@ def MCG(
     df_par_requete = {}
 
     def beta_label(vars_names, values):
-        return "β[" + ", ".join(f"{v}={val}" for v, val in zip(vars_names, values)) + "]"
+        return "β[" + ", ".join(f"{v}={val}" for v, val in zip(vars_names, values, strict=True)) + "]"
 
     # Pré-calcul des DataFrames pour chaque feuille (modalités et noms beta)
     for req in feuilles:
@@ -269,7 +288,7 @@ def MCG(
 # ------------------------------------------
 # Utils: produit des modalités pour un frozenset
 def produit_modalites(
-    fset: FrozenSet,
+    fset: frozenset,
     nb_modalite: dict[str, int]
 ) -> int:
     if not fset:
@@ -311,7 +330,13 @@ def calcul_MCG(
 
     if len(liste_requests) == 1:
         X_df_infos[type_req + "_MCG"] = X_df_infos["value"].values
-        results_modif = mettre_a_jour_results_store(X_df_infos, dict_query, results_store, col_source=type_req + "_MCG", col_cible=type_req)
+        results_modif = mettre_a_jour_results_store(
+            X_df_infos,
+            dict_query,
+            results_store,
+            col_source=type_req + "_MCG",
+            col_cible=type_req
+        )
         return results_modif
 
     # Pondération par sigma2
@@ -457,7 +482,7 @@ def eps_from_rho_delta(
     if rho <= 0 or delta <= 0 or delta >= 1:
         raise ValueError("rho must be positive and delta in (0, 1)")
 
-    def equation(y: float, rho: float, delta: float):
+    def equation(y: float, rho: float, delta: float) -> float:
         denom = delta * (1 + (y - rho) / (2 * rho))
         if denom <= 0:
             return np.inf  # force fsolve à éviter cette zone
@@ -525,15 +550,12 @@ def get_weights(
     # Étape 1 : récupération des poids bruts
     raw_weights = {
         key: radio_to_weight.get(float(dict_values[key]), 0)
-        for key in request.keys()
+        for key in request
     }
 
     # Étape 2 : normalisation initiale
     total = sum(raw_weights.values())
-    if total > 0:
-        weights = {k: v / total for k, v in raw_weights.items()}
-    else:
-        weights = {k: 0 for k in raw_weights}
+    weights = {k: v / total for k, v in raw_weights.items()} if total > 0 else {k: 0 for k in raw_weights}
 
     # Étape 3 : ajustement selon le type de requête
     adjustment_factors = {
@@ -551,7 +573,7 @@ def get_weights(
 
 def load_data(
     path: str,
-    storage_options: Optional[dict[str, str]] = None
+    storage_options: dict[str, str] | None = None
 ) -> pl.LazyFrame:
 
     start = time.time()
