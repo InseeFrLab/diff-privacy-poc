@@ -919,7 +919,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         else:
             requetes_affichees = {
                 k: v for k, v in data_requetes.items()
-                if v.__class__.__name__ in types_selectionnes
+                if isinstance(v, type_map[types_selectionnes])
             }
 
         if not requetes_affichees:
