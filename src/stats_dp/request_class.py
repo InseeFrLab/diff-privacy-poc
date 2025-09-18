@@ -248,7 +248,6 @@ class Query(ABC):
         self.weight = 1
 
         if group_by is None:
-            print(1)
             self.grouping_set = frozenset()
             self.grouping_label = "None"
         else:
@@ -477,8 +476,9 @@ class Count(Query):
         """
         expr = pl.count().alias("count")
         lf = self.filter_and_group_with_bounds(lf, expr, use_bounds=use_bounds)
-        # Tri après group_by (et join si key_values est présent)
-        lf = lf.sort(by=self.group_by)
+        if self.group_by:
+            # Tri après group_by (et join si key_values est présent)
+            lf = lf.sort(by=self.group_by)
         return lf.collect()
 
     def precision_dp(
@@ -582,8 +582,9 @@ class Sum(Query):
             pl.count().alias("count")
         )
         lf = self.filter_and_group_with_bounds(lf, expr, use_bounds=use_bounds)
-        # Tri après group_by (et join si key_values est présent)
-        lf = lf.sort(by=self.group_by)
+        if self.group_by:
+            # Tri après group_by (et join si key_values est présent)
+            lf = lf.sort(by=self.group_by)
         return lf.collect()
 
     def transformation(self) -> tuple[Count, "Sum"]:
@@ -683,7 +684,8 @@ class Mean(Query):
         )
         lf = self.filter_and_group_with_bounds(lf, expr, use_bounds=use_bounds)
         # Tri après group_by (et join si key_values est présent)
-        lf = lf.sort(by=self.group_by)
+        if self.group_by:
+            lf = lf.sort(by=self.group_by)
         return lf.collect()
 
     def execute_dp(
@@ -792,6 +794,8 @@ class Ratio(Query):
         lf = lf.with_columns(
             (pl.col("sum_numerator") / pl.col("sum_denominator")).alias("ratio")
         )
+        if self.group_by:
+            lf = lf.sort(by=self.group_by)
         return lf.collect()
 
     def execute_dp(
@@ -900,4 +904,6 @@ class Quantile(Query):
             for alpha in self.alphas
         )
         lf = self.filter_and_group_with_bounds(lf, *exprs, use_bounds=use_bounds)
+        if self.group_by:
+            lf = lf.sort(by=self.group_by)
         return lf.collect()
