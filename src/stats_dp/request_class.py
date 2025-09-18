@@ -429,9 +429,6 @@ class Query(ABC):
                     generate_public_keys(group_by_columns=self.group_by, value_options=key_values),
                     on=self.group_by, how="right"
                 )
-
-            # Tri après group_by (et join si key_values est présent)
-            lf = lf.sort(by=self.group_by)
         else:
             lf = lf.select(*expressions)
 
@@ -480,6 +477,8 @@ class Count(Query):
         """
         expr = pl.count().alias("count")
         lf = self.filter_and_group_with_bounds(lf, expr, use_bounds=use_bounds)
+        # Tri après group_by (et join si key_values est présent)
+        lf = lf.sort(by=self.group_by)
         return lf.collect()
 
     def precision_dp(
@@ -583,6 +582,8 @@ class Sum(Query):
             pl.count().alias("count")
         )
         lf = self.filter_and_group_with_bounds(lf, expr, use_bounds=use_bounds)
+        # Tri après group_by (et join si key_values est présent)
+        lf = lf.sort(by=self.group_by)
         return lf.collect()
 
     def transformation(self) -> tuple[Count, "Sum"]:
@@ -681,6 +682,8 @@ class Mean(Query):
             pl.col(self.variable).mean().alias("mean")
         )
         lf = self.filter_and_group_with_bounds(lf, expr, use_bounds=use_bounds)
+        # Tri après group_by (et join si key_values est présent)
+        lf = lf.sort(by=self.group_by)
         return lf.collect()
 
     def execute_dp(
