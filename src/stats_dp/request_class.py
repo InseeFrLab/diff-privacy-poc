@@ -429,6 +429,9 @@ class Query(ABC):
                     generate_public_keys(group_by_columns=self.group_by, value_options=key_values),
                     on=self.group_by, how="right"
                 )
+
+            # Tri après group_by (et join si key_values est présent)
+            lf = lf.sort(by=self.group_by)
         else:
             lf = lf.select(*expressions)
 
