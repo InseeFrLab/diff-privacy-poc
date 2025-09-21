@@ -7,7 +7,7 @@ import re
 import operator
 import opendp.prelude as dp
 from opendp.extras.polars import LazyFrameQuery
-
+from polars.datatypes import Float32, Float64
 
 OPS = {
     "==": operator.eq,
@@ -842,7 +842,7 @@ class Quantile(Query):
         variable: str,
         bounds: tuple[float, float],
         alphas: list[float],
-        num_candidates: int,
+        step_size: float,
         group_by: Optional[list[str]] = None,
         filter_expr: Optional[str] = None
     ):
@@ -853,7 +853,7 @@ class Quantile(Query):
         - variable: variable on which to compute quantiles
         - bounds: (min, max) bounds for DP quantile mechanism
         - alphas: list of quantile levels (e.g., [0.25, 0.5, 0.75])
-        - num_candidates: number of candidate quantile points to consider
+        - step_size: spacing between candidate quantile values (i.e., the discretization step)
         - group_by: optional grouping variables
         - filter_expr: optional filter expression
         """
@@ -861,7 +861,7 @@ class Quantile(Query):
         self.variable = variable
         self.bounds = bounds
         self.alphas = alphas if isinstance(alphas, list) else [alphas]
-        self.num_candidates = num_candidates
+        self.step_size = step_size
 
     def plan_dp(
         self,
@@ -872,7 +872,15 @@ class Quantile(Query):
         Plans the differentially private quantile queries.
         """
         bounds_min, bounds_max = self.bounds
-        candidates = np.linspace(bounds_min, bounds_max, int(self.num_candidates))
+        dtype = dataset_info.lf.collect_schema()[self.variable]
+        is_float = dtype in {Float32, Float64}
+        if is_float:
+            candidates = np.arange(bounds_min, bounds_max + 1e-8, self.step_size).tolist()
+        else:
+            lower = int(np.ceil(bounds_min))
+            upper = int(np.floor(bounds_max))
+            step_int = max(int(round(self.step_size)), 1)  # au moins 1
+            candidates = list(range(lower, upper + 1, step_int))
         context = dataset_info.epsilon_context
         query = context.query()
 

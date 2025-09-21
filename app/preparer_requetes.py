@@ -163,8 +163,8 @@ def affichage_bouton(type_req: str, variables: dict, choix_quantile: dict, selec
         contenu.append(ui.column(
             3,
             ui.input_numeric(
-                "nb_candidats", "Nombre de candidats:", 1000,
-                min=5, max=1_000_000, step=5)
+                "pas_candidats", "Pas de discrétisation:", 10,
+                min=0.1, max=1_000_000, step=5)
             )
         )
 

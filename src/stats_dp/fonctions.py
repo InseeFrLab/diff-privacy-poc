@@ -675,10 +675,10 @@ def compute_quantile_confidence_interval(
     variable = req.variable
     bounds_min, bounds_max = req.bounds
     alphas = [float(a) for a in req.alphas]
-    nb_candidats = int(req.num_candidates)
+    step = req.step_size
     by = req.group_by
 
-    candidats = np.linspace(bounds_min, bounds_max, nb_candidats + 1)
+    candidats = np.arange(bounds_min, bounds_max + 1e-8, step).tolist()
     precisions_by_alpha = {alpha: [] for alpha in alphas}
 
     def process_data(data_variable: np.ndarray, vraie_value: float, alpha: float):
@@ -699,7 +699,7 @@ def compute_quantile_confidence_interval(
         proba = proba_non_norm / proba_non_norm.sum()
 
         sorted_indices = np.argsort(proba)[::-1]
-        sorted_candidats = candidats[sorted_indices]
+        sorted_candidats = np.array(candidats)[sorted_indices]
 
         cumulative = np.cumsum(proba[sorted_indices])
         top95_mask = cumulative <= 0.95

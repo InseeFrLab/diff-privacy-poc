@@ -120,7 +120,7 @@ def bloc_score_quantile():
                 ui.br(),
 
                 # Texte explicatif
-                ui.p("Définir le nombre de candidats susceptibles d'être tirés entre min et max de la variable :"),
+                ui.p("Définir les candidats susceptibles d'être tirés entre min et max de la variable :"),
                 ui.br(),
 
                 # Sliders min-max / candidats
@@ -130,7 +130,7 @@ def bloc_score_quantile():
                         max=10000, value=[3000, 6000]
                     ),
                     ui.input_slider(
-                        "candidat_slider", "Nombre de candidats", min=1, max=1000, value=100
+                        "candidat_slider", "Pas discrétisation :", min=1, max=500, value=100
                     ),
                     col_widths=[6, 6]
                 ),

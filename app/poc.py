@@ -243,12 +243,12 @@ def server(input: Inputs, output: Outputs, session: Session):
     # Page Introduction DP
     @reactive.calc
     def score_proba_quantile() -> pd.DataFrame:
-        nb_candidat = input.candidat_slider()
+        pas = input.candidat_slider()
         alpha = input.alpha_slider()
         epsilon = input.epsilon_slider()
         L, U = input.min_max_slider()
 
-        candidats = np.linspace(L, U, nb_candidat).tolist()
+        candidats = np.arange(L, U + 1e-8, pas).tolist()
         scores, sensi = manual_quantile_score(data_example['body_mass_g'], candidats, alpha, True)
 
         # Probabilités exponentielles (mécanisme exponentiel)
@@ -508,7 +508,7 @@ def server(input: Inputs, output: Outputs, session: Session):
         metadata_dict = yaml.safe_load(yaml_metadata_str()) if yaml_metadata_str() else {}
         variable = input.variable() if type_req != "Comptage" else None
         variable_denom = input.variable_denominateur() if type_req == "Ratio" else None
-        nb_candidats = input.nb_candidats() if type_req == "Quantile" else None
+        pas_candidats = input.pas_candidats() if type_req == "Quantile" else None
 
         if not assert_or_notify(variable or type_req == "Comptage", "Aucune variable sélectionnée"):
             return
@@ -549,14 +549,14 @@ def server(input: Inputs, output: Outputs, session: Session):
             alphas = sorted(input.alpha())
 
             if not assert_or_notify(
-                nb_candidats,
+                pas_candidats,
                 "Nombre de valeurs candidates au quantile manquant"
             ):
                 return
 
             if not assert_or_notify(
-                nb_candidats > 5,
-                "Nombre de valeurs candidates au quantile insuffisant"
+                pas_candidats > 0,
+                "Pas de discrétisation négatif ou nul"
             ):
                 return
 
@@ -568,7 +568,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
             base_dict.update({
                 "alphas": alphas,
-                "num_candidates": nb_candidats,
+                "step_size": pas_candidats,
             })
 
         elif type_req == 'Ratio':
