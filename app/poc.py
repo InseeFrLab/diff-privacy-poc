@@ -550,7 +550,7 @@ def server(input: Inputs, output: Outputs, session: Session):
 
             if not assert_or_notify(
                 pas_candidats,
-                "Nombre de valeurs candidates au quantile manquant"
+                "Pas de discrétisation manquant"
             ):
                 return
 

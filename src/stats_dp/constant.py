@@ -83,4 +83,4 @@ priorite: dict[Query, float] = {
 contrib_individu: int = 1
 
 # Borne supérieure autorisée pour la taille d’un dataset (en nombre d’individu)
-borne_max_taille_dataset: int = 1000  # Peut être relevé à 70_000_000 si besoin
+borne_max_taille_dataset: int = 70_000_000
