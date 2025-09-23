@@ -251,9 +251,13 @@ def server(input: Inputs, output: Outputs, session: Session):
         candidats = np.arange(L, U + 1e-8, pas).tolist()
         scores, sensi = manual_quantile_score(data_example['body_mass_g'], candidats, alpha, True)
 
-        # Probabilités exponentielles (mécanisme exponentiel)
-        proba_non_norm = np.exp(-epsilon * scores / (2 * sensi))
-        proba = proba_non_norm / np.sum(proba_non_norm)
+        # Stabilisation des scores exponentiels
+        scaled_scores = -epsilon * scores / (2 * sensi)
+        scaled_scores -= scaled_scores.max()  # Pour éviter les overflow numériques
+
+        # Probabilités exponentielles
+        proba_non_norm = np.exp(scaled_scores)
+        proba = proba_non_norm / proba_non_norm.sum()
 
         # Top 95% des probabilités
         sorted_indices = np.argsort(proba)[::-1]

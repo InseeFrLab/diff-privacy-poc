@@ -69,7 +69,7 @@ def bloc_score_quantile():
                             \\[
                             \\begin{array}{c}
                             \\textbf{score}(x, c, \\alpha) = \\\\
-                            -10\\,000 \\times \\left| \\sum_{i=1}^{n} \\mathbf{1}_{\\{x_i < c\\}} -
+                            10\\,000 \\times \\left| \\sum_{i=1}^{n} \\mathbf{1}_{\\{x_i < c\\}} -
                             \\alpha \\times \\left(n - \\sum_{i=1}^{n} \\mathbf{1}_{\\{x_i = c\\}} \\right) \\right|
                             \\end{array}
                             \\]
@@ -109,7 +109,7 @@ def bloc_score_quantile():
                 ui.layout_columns(
                     ui.input_slider(
                         "epsilon_slider", "Budget epsilon :", min=0.01,
-                        max=5, value=0.5, step=0.01
+                        max=1, value=0.5, step=0.01
                     ),
                     ui.input_slider(
                         "alpha_slider", "Ordre du quantile :", min=0,

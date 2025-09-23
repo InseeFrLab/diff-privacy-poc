@@ -2,7 +2,7 @@ import numpy as np
 import polars as pl
 import pandas as pd
 from scipy.optimize import fsolve
-
+from scipy.linalg import qr
 from .constant import radio_to_weight
 from .request_class import Sum, Mean, Ratio, Quantile, Query
 import yaml

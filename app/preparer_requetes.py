@@ -181,11 +181,11 @@ def make_card_body(req):
         ("bounds", "🎯 Bornes", lambda v: f"`[{v[0]}, {v[1]}]`"
             if isinstance(v, (list, tuple)) and len(v) == 2 else "—"),
 
-        ("by", "🧷 Group by", lambda v: f"`{', '.join(v)}`"),
+        ("group_by", "🧷 Group by", lambda v: f"`{', '.join(v)}`"),
 
         ("filtre", "🧮 Filtre", lambda v: f"`{v}`"),
 
-        ("alpha", "📈 Alpha", lambda v: f"`{v}`"
+        ("alphas", "📈 Alpha", lambda v: f"`{v}`"
             if isinstance(v, (float, int, str)) else f"`{', '.join(map(str, v))}`"),
     ]
 
